@@ -224,14 +224,11 @@ class CommsManager(Node):
         overwrite_targeted: bool = msg.overwrite_targeted
 
         if recipient_id != "":
-            self.message_buffer[sender_id][recipient_id] = msg
+            self.message_buffer.setdefault(sender_id, {})[recipient_id] = msg
         else:
-            self.message_buffer[sender_id][""] = msg
-
             if overwrite_targeted:
-                self.message_buffer[sender_id].clear()
-            else:
-                self.message_buffer[sender_id][""] = msg
+                self.message_buffer.setdefault(sender_id, {}).clear()
+            self.message_buffer[sender_id][""] = msg
 
     def _propagate_close_range(self) -> None:
         """
@@ -322,7 +319,12 @@ class CommsManager(Node):
 
     def _get_pairwise_zone(self, agent_a: str, agent_b: str) -> CommsZone:
         """Look up cached pairwise zone."""
-        return self.pairwise_zones[self._get_pair_key(agent_a, agent_b)]
+        pair_key = self._get_pair_key(agent_a, agent_b)
+        if pair_key not in self.pairwise_zones:
+            zone = self._compute_zone(agent_a, agent_b)
+            self.pairwise_zones[pair_key] = zone
+            return zone
+        return self.pairwise_zones[pair_key]
 
     # -------------------------------------------------------------------------
     # Communication Zone Management

@@ -89,7 +89,7 @@ class CommsManager(Node):
         """Set up state for the comms manager."""
         # Agent tracking
         num_agents = self.get_parameter("num_agents").value
-        self.agent_ids: set[str] = {f"agent_{i}" for i in range(num_agents)}
+        self.agent_ids: set[str] = {f"robot_{i}" for i in range(num_agents)}
         self.agent_positions: dict[str, Point | None] = dict.fromkeys(self.agent_ids, None)
         self.known_map: npt.NDArray[np.uint8] | None = None
         self.known_map_resolution: float | None = None

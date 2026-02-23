@@ -241,6 +241,7 @@ class CommsManager(Node):
         """
         for sender_id, messages in self.message_buffer.items():
             broadcast_recipients: set[str] = self.agent_ids - {sender_id}
+            broadcast_msg: AgentMessage | None = None
             for recipient_id, msg in messages.items():
                 if recipient_id == "":
                     broadcast_msg = msg
@@ -253,11 +254,12 @@ class CommsManager(Node):
 
                 self._publish_to_agent(recipient_id, msg)
 
-            for recipient_id in broadcast_recipients:
-                if self._get_pairwise_zone(sender_id, recipient_id) != CommsZone.CLOSE_RANGE:
-                    continue
-
-                self._publish_to_agent(recipient_id, broadcast_msg)
+            if broadcast_msg is not None:
+                for recipient_id in broadcast_recipients:
+                    if self._get_pairwise_zone(sender_id, recipient_id) != CommsZone.CLOSE_RANGE:
+                        continue
+                    self.get_logger().info(f"Publishing broadcast message to {recipient_id}")
+                    self._publish_to_agent(recipient_id, broadcast_msg)
 
     def _propagate_long_range(self) -> None:
         """
@@ -276,6 +278,7 @@ class CommsManager(Node):
         """
         for sender_id, messages in self.message_buffer.items():
             broadcast_recipients: set[str] = self.agent_ids - {sender_id}
+            broadcast_msg: AgentMessage | None = None
             for recipient_id, msg in messages.items():
                 if recipient_id == "":
                     broadcast_msg = msg
@@ -289,12 +292,13 @@ class CommsManager(Node):
                 if self._should_deliver(sender_id, recipient_id, msg):
                     self._publish_to_agent(recipient_id, msg)
 
-            for recipient_id in broadcast_recipients:
-                if self._get_pairwise_zone(sender_id, recipient_id) != CommsZone.LONG_RANGE:
-                    continue
+            if broadcast_msg is not None:
+                for recipient_id in broadcast_recipients:
+                    if self._get_pairwise_zone(sender_id, recipient_id) != CommsZone.LONG_RANGE:
+                        continue
 
-                if self._should_deliver(sender_id, recipient_id, broadcast_msg):
-                    self._publish_to_agent(recipient_id, broadcast_msg)
+                    if self._should_deliver(sender_id, recipient_id, broadcast_msg):
+                        self._publish_to_agent(recipient_id, broadcast_msg)
 
     def _publish_to_agent(self, recipient_id: str, msg: AgentMessage) -> None:
         """Publish message to specific agent's output topic."""

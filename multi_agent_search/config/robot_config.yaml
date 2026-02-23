@@ -1,0 +1,13 @@
+# Source package whose world/ directory contains necessary world files/templates.
+source_package: example_usage
+
+# Optional: header file to insert at top of world file (for includes, definitions)
+# Path is relative to source_package share directory
+header_path: world/robot_header.world
+
+# List of robot templates to instantiate
+# Paths are relative to source_package share directory
+# Supports heterogeneous robot types.
+templates:
+  - path: world/pioneer2dx_with_laser_template.world
+    count: 5

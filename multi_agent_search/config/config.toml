@@ -1,0 +1,33 @@
+# Floorplan parameters
+## General
+wall_thickness = 0.2
+num_turns = 3  # num_turns + 1 is the number of hallway segments
+turn_direction = "random"  # Options: "alternating", "random", "clockwise", "counterclockwise" but clockwise and counterclockwise are broken
+# seed = 0  # Uncomment and set for detereminism
+max_retries = 1
+## Rooms
+num_rooms = 12
+room_wall_length = 3.7
+room_spacing = 0  # Outer edge of wall to outer edge of next wall spacing
+## Doorway
+doorway_width = 0.8
+doorway_length = 0
+## Hallway
+hallway_width = 1.8
+hallway_end_padding = 1.45  # Recommended value for hallway ends to align with room edges: (room_wall_length - doorway_width) / 2
+num_open_spaces = 0  # Number of hallway segments to convert to open spaces (atria-like squares)
+
+## Obstacles
+obstacles_enabled = true
+num_obstacles = 20
+obstacle_length = 0.2  #  This requires balancing between hallway width/room size, obstacle clearance, and your lidar's angular resolution
+                       #  It should be small enough that your robot can go around it in a hallway or room, but large enough for your lidar to see it
+obstacle_clearance = 0.4  # Minimum distance from obstacle to walls. Should be your robot's radius plus some buffer
+obstacle_spacing = 0  # Minimum distance between obstacles
+obstacle_placement = "both"  # Options: "rooms", "hallways", "both"
+
+# Robot Spawn Positions
+robot_radius = 0.255
+num_robots = 5
+robot_min_clearance = 0.5  # Minimum distance from walls and between robot edges (measured from outer edge of robot)
+spawn_export_filename = "world_config.yaml"

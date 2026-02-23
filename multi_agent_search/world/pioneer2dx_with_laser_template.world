@@ -1,0 +1,6 @@
+pioneer2dx_with_laser
+(
+    name "{{robot-name}}"
+    color "red"
+    pose [ {{robot-x}} {{robot-y}} 0 0 ]
+)

@@ -7,6 +7,7 @@ management, and target detection for concrete agent implementations.
 
 from __future__ import annotations
 
+import ast
 import math
 import pickle
 from abc import ABC, abstractmethod
@@ -75,7 +76,7 @@ class AgentBase(Node, ABC):
 
         self.declare_parameter("use_known_map", False)
 
-        self.declare_parameter("target_positions", [], ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE_ARRAY))
+        self.declare_parameter("target_positions", "[]")
         self.declare_parameter("target_radius", 1.0)
 
     def _set_up_state(self) -> None:
@@ -90,8 +91,9 @@ class AgentBase(Node, ABC):
         self._map_info: MapMetaData | None = None
 
         # Target detection state
-        flat = self.get_parameter("target_positions").value
-        self._target_positions: list[tuple[float, float]] = [(flat[i], flat[i + 1]) for i in range(0, len(flat), 2)]
+        raw = self.get_parameter("target_positions").value
+        parsed = ast.literal_eval(raw)
+        self._target_positions: list[tuple[float, float]] = [(float(p[0]), float(p[1])) for p in parsed]
         self._target_radius: float = self.get_parameter("target_radius").value
         self._found_targets: set[int] = set()
 

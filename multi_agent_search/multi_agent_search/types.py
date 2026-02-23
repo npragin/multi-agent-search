@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
+
+from geometry_msgs.msg import Pose
 
 
 class CommsZone(IntEnum):
@@ -23,13 +25,6 @@ class NavStatus(IntEnum):
     FAILED = 3
 
 
-class MsgType(IntEnum):
-    """Message type enum matching AgentMessage.msg constants."""
-
-    HEARTBEAT = 0
-    COORDINATION = 1
-
-
 @dataclass
 class CommsConfig:
     """Configuration parameters for the communications manager."""
@@ -40,3 +35,44 @@ class CommsConfig:
     close_range_rate: float = 10.0  # Hz
     long_range_rate: float = 1.0  # Hz
     fusion_cooldown: float = 5.0  # seconds (unknown map mode only)
+
+
+@dataclass
+class BaseCoordinationMessage:
+    """
+    Base dataclass for algorithm-specific coordination message payloads.
+
+    Provides common fields populated automatically by AgentBase before
+    sending. Subclasses add protocol-specific fields and are serialized
+    with pickle — no manual serialization needed.
+
+    Fields:
+        sender_id:  Agent ID of the sender, set by AgentBase before publishing.
+        timestamp:  Send time in seconds (ROS time), set by AgentBase before publishing.
+
+    Usage::
+
+        @dataclass
+        class MyCoordMsg(BaseCoordinationMessage):
+            task_id: int = 0
+
+        # Sending:
+        self.publish_coordination_message(MyCoordMsg(task_id=42))
+
+        # Receiving (in on_coordination):
+        def on_coordination(self, sender: str, msg: BaseCoordinationMessage) -> None:
+            assert isinstance(msg, MyCoordMsg)
+            print(msg.sender_id, msg.task_id)
+    """
+
+    sender_id: str = ""
+    timestamp: float = 0.0
+
+
+@dataclass
+class HeartbeatMessage:
+    """Heartbeat message carrying this agent's current pose."""
+
+    sender_id: str = ""
+    timestamp: float = 0.0
+    pose: Pose = field(default_factory=Pose)

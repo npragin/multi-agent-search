@@ -36,7 +36,7 @@ section-order = ["future", "standard-library", "third-party", "ros", "first-part
 known-first-party = ["multi_agent_search", "multi_agent_search_interfaces"]
 
 [tool.ruff.lint.isort.sections]
-ros = ["rclpy", "geometry_msgs", "nav_msgs", "sensor_msgs", "std_msgs", "tf2_ros", "tf2_geometry_msgs", "visualization_msgs"]
+ros = ["rclpy", "rcl_interfaces", "geometry_msgs", "nav_msgs", "nav2_msgs", "sensor_msgs", "std_msgs", "std_srvs", "tf2_ros", "tf2_geometry_msgs", "visualization_msgs"]
 
 [tool.mypy]
 python_version = "3.13"

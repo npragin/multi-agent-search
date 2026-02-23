@@ -8,6 +8,7 @@ rate limiting, and map/belief fusion (unknown map mode only).
 from __future__ import annotations
 
 import math
+import time
 from itertools import combinations
 
 import numpy as np
@@ -18,7 +19,9 @@ from std_srvs.srv import Trigger
 import rclpy
 from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid, Odometry
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.client import Client
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.publisher import Publisher
 from rclpy.subscription import Subscription
@@ -42,7 +45,7 @@ class CommsManager(Node):
     are within fusion range with line-of-sight (unknown map mode only).
     """
 
-    def __init__(self, agent_ids: list[str], config: CommsConfig) -> None:
+    def __init__(self) -> None:
         """
         Initialize comms manager with known agent IDs and configuration.
 
@@ -121,8 +124,9 @@ class CommsManager(Node):
         # Map fusion tracking: (agent_a, agent_b) sorted tuple -> time
         self.last_fusion_time: dict[tuple[str, str], Time] = {}
 
-        # Delivery rate tracking: (sender_id, recipient_id) -> time
-        self.last_delivery_time: dict[tuple[str, str], Time] = {}
+        # Callback group for fusion-related clients and timer so they can
+        # be processed concurrently with the timer callback that awaits them.
+        self._fusion_cb_group = ReentrantCallbackGroup()
 
         # Per-agent ROS2 interfaces (populated by _setup_agent)
         self._message_publishers: dict[str, Publisher] = {}
@@ -149,11 +153,21 @@ class CommsManager(Node):
         self._pose_subscriptions[agent_id] = self.create_subscription(
             Odometry, f"/{agent_id}/ground_truth", lambda msg: self._on_ground_truth_pose(msg, agent_id), 10
         )
-        self._map_get_clients[agent_id] = self.create_client(GetMap, f"/{agent_id}/get_map")
-        self._map_set_clients[agent_id] = self.create_client(SetMap, f"/{agent_id}/set_map")
-        self._belief_get_clients[agent_id] = self.create_client(GetMap, f"/{agent_id}/get_belief")
-        self._belief_set_clients[agent_id] = self.create_client(SetMap, f"/{agent_id}/set_belief")
-        self._fusion_complete_clients[agent_id] = self.create_client(Trigger, f"/{agent_id}/fusion_complete")
+        self._map_get_clients[agent_id] = self.create_client(
+            GetMap, f"/{agent_id}/get_map", callback_group=self._fusion_cb_group
+        )
+        self._map_set_clients[agent_id] = self.create_client(
+            SetMap, f"/{agent_id}/set_map", callback_group=self._fusion_cb_group
+        )
+        self._belief_get_clients[agent_id] = self.create_client(
+            GetMap, f"/{agent_id}/get_belief", callback_group=self._fusion_cb_group
+        )
+        self._belief_set_clients[agent_id] = self.create_client(
+            SetMap, f"/{agent_id}/set_belief", callback_group=self._fusion_cb_group
+        )
+        self._fusion_complete_clients[agent_id] = self.create_client(
+            Trigger, f"/{agent_id}/fusion_complete", callback_group=self._fusion_cb_group
+        )
 
     def _set_up_timers(self) -> None:
         """Set up timers for the comms manager."""
@@ -164,7 +178,7 @@ class CommsManager(Node):
         self.create_timer(long_period, self._propagate_long_range)
 
         check_fusion_period = 1.0 / self.get_parameter("check_fusion_eligibility_rate").value
-        self.create_timer(check_fusion_period, self._check_fusion_eligibility)
+        self.create_timer(check_fusion_period, self._check_fusion_eligibility, callback_group=self._fusion_cb_group)
 
         update_pairwise_zones_period = 1.0 / self.get_parameter("update_pairwise_zones_rate").value
         self.create_timer(update_pairwise_zones_period, self._update_pairwise_zones)
@@ -420,7 +434,7 @@ class CommsManager(Node):
 
         while not all(f.done() for f in get_futures):
             self.get_logger().info("Waiting for get requests to complete for fusion...")
-            rclpy.spin_once(self)
+            time.sleep(0.01)
 
         if any(f.result() is None for f in get_futures):
             self.get_logger().error("Failed to get map or belief messages")
@@ -445,7 +459,7 @@ class CommsManager(Node):
 
         while not all(f.done() for f in set_futures):
             self.get_logger().info("Waiting for set requests to complete for fusion...")
-            rclpy.spin_once(self)
+            time.sleep(0.01)
 
         self._fusion_complete_clients[agent_a].call_async(Trigger.Request())
         self._fusion_complete_clients[agent_b].call_async(Trigger.Request())
@@ -605,8 +619,12 @@ class CommsManager(Node):
 def main(args: list[str] | None = None) -> None:
     """Entry point for the comms manager node."""
     rclpy.init(args=args)
-    # agent_ids and config would be loaded from parameters or launch arguments
-    pass
+    comms_manager = CommsManager()
+    executor = MultiThreadedExecutor()
+    executor.add_node(comms_manager)
+    executor.spin()
+    comms_manager.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == "__main__":

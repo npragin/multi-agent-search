@@ -29,7 +29,11 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Int32MultiArray
 from std_srvs.srv import Trigger
 
-from multi_agent_search.types import BaseCoordinationMessage, HeartbeatMessage, NavStatus
+from multi_agent_search.types import (
+    BaseCoordinationMessage,
+    HeartbeatMessage,
+    NavStatus,
+)
 from multi_agent_search_interfaces.msg import AgentMessage
 from multi_agent_search_interfaces.srv import GetMap, SetMap
 

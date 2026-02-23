@@ -14,7 +14,6 @@ from itertools import combinations
 import numpy as np
 import numpy.typing as npt
 from skimage.draw import line as skimage_line
-from std_srvs.srv import Trigger
 
 import rclpy
 from geometry_msgs.msg import Point
@@ -26,11 +25,11 @@ from rclpy.node import Node
 from rclpy.publisher import Publisher
 from rclpy.subscription import Subscription
 from rclpy.time import Duration, Time
+from std_srvs.srv import Trigger
 
 from multi_agent_search.types import CommsConfig, CommsZone
 from multi_agent_search_interfaces.msg import AgentMessage
 from multi_agent_search_interfaces.srv import GetMap, SetMap
-
 
 ELIMINATED_VALUE = -128  # TODO: Magic number
 
@@ -399,12 +398,17 @@ class CommsManager(Node):
         - Cooldown period has elapsed since last fusion
         """
         distance_check = self._get_distance(agent_a, agent_b) <= self.comms_config.fusion_range_threshold
+
         line_of_sight_check = self._has_line_of_sight(agent_a, agent_b)
-        cooldown_check = (
-            self.last_fusion_time[self._get_pair_key(agent_a, agent_b)]
-            + Duration(seconds=self.comms_config.fusion_cooldown)
-            < self.get_clock().now()
-        )
+
+        last_fusion_time = self.last_fusion_time.get(self._get_pair_key(agent_a, agent_b))
+        if last_fusion_time is None:
+            cooldown_check = True
+        else:
+            cooldown_check = (
+                last_fusion_time + Duration(seconds=self.comms_config.fusion_cooldown) < self.get_clock().now()
+            )
+
         return distance_check and line_of_sight_check and cooldown_check
 
     def _perform_fusion(self, agent_a: str, agent_b: str) -> None:
@@ -566,8 +570,12 @@ class CommsManager(Node):
 
         # Extract eliminated masks (encoded as -128) and take union
         eliminated = np.zeros((out_h, out_w), dtype=bool)
-        eliminated[row_a : row_a + belief_a.info.height, col_a : col_a + belief_a.info.width] |= data_a == ELIMINATED_VALUE
-        eliminated[row_b : row_b + belief_b.info.height, col_b : col_b + belief_b.info.width] |= data_b == ELIMINATED_VALUE
+        eliminated[row_a : row_a + belief_a.info.height, col_a : col_a + belief_a.info.width] |= (
+            data_a == ELIMINATED_VALUE
+        )
+        eliminated[row_b : row_b + belief_b.info.height, col_b : col_b + belief_b.info.width] |= (
+            data_b == ELIMINATED_VALUE
+        )
 
         fused = np.zeros((out_h, out_w), dtype=np.int16)
         fused[row_a : row_a + belief_a.info.height, col_a : col_a + belief_a.info.width] += data_a

@@ -374,6 +374,7 @@ class AgentBase(Node, ABC):
 
         # Early exit if no expansion needed
         if out_h == old_info.height and out_w == old_info.width and out_ox == ox_old and out_oy == oy_old:
+            self.get_logger().info("_expand_grid is exiting early, no expansion needed")
             return grid
 
         # Create expanded array, copy old data into correct position
@@ -458,6 +459,9 @@ class AgentBase(Node, ABC):
         4. Forwards to subclass via on_lidar_scan for algorithm-specific processing
         """
         if self._current_pose is None or self._belief is None or self._map_info is None or self._eliminated is None:
+            self.get_logger().warn(
+                "_on_lidar_callback is exiting early, current pose, belief, map info, or eliminated is not set"
+            )
             return
 
         all_rr, all_cc = self._trace_scan_rays(scan)
@@ -527,6 +531,7 @@ class AgentBase(Node, ABC):
         calls on_target_detected().
         """
         if not self._target_positions:
+            self.get_logger().warn("Target positions are not set, skipping target detection")
             return
 
         if self._map_info is None:
@@ -535,6 +540,7 @@ class AgentBase(Node, ABC):
 
         unfound = [(i, pos) for i, pos in enumerate(self._target_positions) if i not in self._found_targets]
         if not unfound:
+            self.get_logger().warn("No unfound targets, skipping target detection")
             return
 
         res = self._map_info.resolution

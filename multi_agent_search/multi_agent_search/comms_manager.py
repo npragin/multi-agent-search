@@ -86,7 +86,7 @@ class CommsManager(Node):
 
     def _set_up_subscribers(self) -> None:
         """Set up subscribers for the comms manager."""
-        self.create_subscription(OccupancyGrid, "/known_map", self._on_known_map_update, 10)
+        self.create_subscription(OccupancyGrid, "/ground_truth_map", self._on_known_map_update, 10)
 
     def _set_up_state(self) -> None:
         """Set up state for the comms manager."""

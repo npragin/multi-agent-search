@@ -170,8 +170,18 @@ class AgentBase(Node, ABC):
         publish another HEARTBEAT message.
 
         """
+        if recipient == self._agent_id:
+            self.get_logger().info("Skipping publishing message to self")
+            return
         self.pub_outgoing.publish(
-            AgentMessage(msg_type=msg_type, payload=payload, recipient=recipient, overwrite_targeted=overwrite_targeted)
+            AgentMessage(
+                msg_type=msg_type,
+                sender_id=self._agent_id,
+                recipient_id=recipient,
+                overwrite_targeted=overwrite_targeted,
+                timestamp=self.get_clock().now().nanoseconds,
+                payload=payload,
+            )
         )
 
     def publish_heartbeat(self, recipient: str = "", overwrite_targeted: bool = True) -> None:

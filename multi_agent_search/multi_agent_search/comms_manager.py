@@ -29,6 +29,9 @@ from multi_agent_search_interfaces.msg import AgentMessage
 from multi_agent_search_interfaces.srv import GetMap, SetMap
 
 
+ELIMINATED_VALUE = -128  # TODO: Magic number
+
+
 class CommsManager(Node):
     """
     Central communications manager that mediates all inter-agent messaging.
@@ -541,11 +544,17 @@ class CommsManager(Node):
         data_a = np.array(belief_a.data, dtype=np.int16).reshape(belief_a.info.height, belief_a.info.width)
         data_b = np.array(belief_b.data, dtype=np.int16).reshape(belief_b.info.height, belief_b.info.width)
 
+        # Extract eliminated masks (encoded as -128) and take union
+        eliminated = np.zeros((out_h, out_w), dtype=bool)
+        eliminated[row_a : row_a + belief_a.info.height, col_a : col_a + belief_a.info.width] |= data_a == ELIMINATED_VALUE
+        eliminated[row_b : row_b + belief_b.info.height, col_b : col_b + belief_b.info.width] |= data_b == ELIMINATED_VALUE
+
         fused = np.zeros((out_h, out_w), dtype=np.int16)
         fused[row_a : row_a + belief_a.info.height, col_a : col_a + belief_a.info.width] += data_a
         fused[row_b : row_b + belief_b.info.height, col_b : col_b + belief_b.info.width] += data_b
 
         output = np.clip(fused, -127, 127).astype(np.int8)  # TODO: Magic number (also in docstring)
+        output[eliminated] = ELIMINATED_VALUE
 
         fused_map = OccupancyGrid()
         fused_map.header = belief_a.header

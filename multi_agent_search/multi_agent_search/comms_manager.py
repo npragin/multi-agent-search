@@ -63,6 +63,8 @@ class CommsManager(Node):
 
         self._set_up_timers()
 
+        self.get_logger().info("Comms manager initialized")
+
     # -------------------------------------------------------------------------
     # Initialization
     # -------------------------------------------------------------------------
@@ -263,7 +265,6 @@ class CommsManager(Node):
                 for recipient_id in broadcast_recipients:
                     if self._get_pairwise_zone(sender_id, recipient_id) != CommsZone.CLOSE_RANGE:
                         continue
-                    self.get_logger().info(f"Publishing broadcast message to {recipient_id}")
                     self._publish_to_agent(recipient_id, broadcast_msg)
 
     def _propagate_long_range(self) -> None:
@@ -473,7 +474,7 @@ class CommsManager(Node):
         get_futures += [belief_a_future, belief_b_future]
 
         while not all(f.done() for f in get_futures):
-            self.get_logger().info(f"Waiting for get requests to fuse {agent_a} and {agent_b}...")
+            self.get_logger().info(f"Waiting for get requests to fuse {agent_a} and {agent_b}...", once=True)
             time.sleep(0.01)
 
         if any(f.result() is None for f in get_futures):
@@ -503,7 +504,7 @@ class CommsManager(Node):
         set_futures.append(self._belief_set_clients[agent_b].call_async(SetMap.Request(map=fused_belief)))
 
         while not all(f.done() for f in set_futures):
-            self.get_logger().info(f"Waiting for set requests to fuse {agent_a} and {agent_b}...")
+            self.get_logger().info(f"Waiting for set requests to fuse {agent_a} and {agent_b}...", once=True)
             time.sleep(0.01)
 
         self._fusion_complete_clients[agent_a].call_async(Trigger.Request())

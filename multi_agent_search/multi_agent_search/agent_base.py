@@ -402,6 +402,7 @@ class AgentBase(Node, ABC):
 
         AMCL does not support latched topics, so we need to use a service to facilitate the initial pose setting.
         """
+        # TODO: Fix this when migrating to lifecycle nodes, all of this initial pose and reinit AMCL should be a part of the sequence
         if not self._set_initial_pose_client.wait_for_service(timeout_sec=10.0):  # TODO: Magic number
             self.get_logger().error("set_initial_pose service not available after 10s")
             return
@@ -586,17 +587,14 @@ class AgentBase(Node, ABC):
         4. Forwards to subclass via on_lidar_scan for algorithm-specific processing
         """
         if self._current_pose is None or self._belief is None or self._map_info is None or self._eliminated is None:
+            warning = "_on_lidar_callback is exiting early: "
             if self._current_pose is None:
-                self.get_logger().warn("Current pose is not set, skipping lidar callback")
-            if self._belief is None:
-                self.get_logger().warn("Belief is not set, skipping lidar callback")
-            if self._map_info is None:
-                self.get_logger().warn("Map info is not set, skipping lidar callback")
-            if self._eliminated is None:
-                self.get_logger().warn("Eliminated is not set, skipping lidar callback")
-            self.get_logger().warn(
-                "_on_lidar_callback is exiting early, current pose, belief, map info, or eliminated is not set",
-            )
+                warning += "pose, "
+            if self._belief is None or self._eliminated is None or self._map_info is None:
+                warning += "map data, "
+            warning = warning.rstrip(", ")
+            warning += " not set."
+            self.get_logger().warn(warning, throttle_duration_sec=1.0)
             return
 
         all_rr, all_cc = self._trace_scan_rays(scan)
@@ -673,16 +671,16 @@ class AgentBase(Node, ABC):
         calls on_target_detected().
         """
         if not self._target_positions:
-            self.get_logger().warn("Target positions are not set, skipping target detection")
+            self.get_logger().warn("Target positions are not set, skipping target detection", once=True)
             return
 
         if self._map_info is None:
-            self.get_logger().warn("Map info is not set, skipping target detection")
+            self.get_logger().warn("Map info is not set, skipping target detection", throttle_duration_sec=1.0)
             return
 
         unfound = [(i, pos) for i, pos in enumerate(self._target_positions) if i not in self._found_targets]
         if not unfound:
-            self.get_logger().warn("No unfound targets, skipping target detection")
+            self.get_logger().info("All targets found, skipping target detection", once=True)
             return
 
         res = self._map_info.resolution

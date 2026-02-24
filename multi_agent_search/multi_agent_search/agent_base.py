@@ -130,37 +130,35 @@ class AgentBase(Node, ABC):
 
     def _set_up_subscribers(self) -> None:
         """Set up subscribers for the agent."""
+        latched_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+
         self.sub_incoming = self.create_subscription(
             AgentMessage, f"/comms/input/{self._agent_id}", self._on_incoming_message, 10
         )
         self.sub_lidar = self.create_subscription(
             LaserScan, f"/{self._agent_id}/base_scan", self._on_lidar_callback, 10
         )
-
-        # Map subscription
-        map_qos = QoSProfile(
-            depth=1,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            reliability=ReliabilityPolicy.RELIABLE,
+        self.sub_map = self.create_subscription(
+            OccupancyGrid, f"/{self._agent_id}/map", self._on_map_updated, latched_qos
         )
-        self.sub_map = self.create_subscription(OccupancyGrid, f"/{self._agent_id}/map", self._on_map_updated, map_qos)
-
         self.sub_pose = self.create_subscription(
-            PoseWithCovarianceStamped, f"/{self._agent_id}/pose", self._on_pose_updated, 10
+            PoseWithCovarianceStamped,
+            f"/{self._agent_id}/pose",
+            self._on_pose_updated,
+            latched_qos if self._use_known_map else 10,  # AMCL publishes a latched topic
         )
 
         # Initial pose subscription
         if self._known_initial_poses:
-            initial_pose_qos = QoSProfile(
-                depth=1,
-                durability=DurabilityPolicy.TRANSIENT_LOCAL,
-                reliability=ReliabilityPolicy.RELIABLE,
-            )
             self.sub_initial_pose = self.create_subscription(
                 PoseWithCovarianceStamped,
                 f"/{self._agent_id}/initialpose",
                 self._on_initial_pose_received,
-                initial_pose_qos,
+                latched_qos,
             )
 
     def _set_up_publishers(self) -> None:

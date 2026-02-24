@@ -54,14 +54,14 @@ def _launch_brain_dead_agents(context):
 def generate_launch_description():
     use_known_map_arg = DeclareLaunchArgument(
         "use_known_map",
-        default_value="false",
+        default_value="true",
         description="If true, use AMCL with known map; if false, use slam_toolbox for SLAM",
     )
     use_known_map = LaunchConfiguration("use_known_map")
 
     known_initial_poses_arg = DeclareLaunchArgument(
         "known_initial_poses",
-        default_value="false",
+        default_value="true",
         description="If true, publish initial poses from floorplan generator and disable AMCL's default initial pose",
     )
     known_initial_poses = LaunchConfiguration("known_initial_poses")

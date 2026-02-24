@@ -17,17 +17,20 @@ import numpy.typing as npt
 from action_msgs.msg import GoalStatus
 from skimage.draw import line as skimage_line
 
+import tf2_ros
 from geometry_msgs.msg import Pose, PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.srv import SetInitialPose
 from nav_msgs.msg import MapMetaData, OccupancyGrid
-from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
+from rclpy.client import Client
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.task import Future
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Int32MultiArray
-from std_srvs.srv import Trigger
+from std_srvs.srv import Empty, Trigger
 
 from multi_agent_search.types import (
     BaseCoordinationMessage,
@@ -67,8 +70,10 @@ class AgentBase(Node, ABC):
         self._set_up_state()
         self._set_up_publishers()
         self._set_up_action_clients()
+        self._set_up_service_clients()
         self._set_up_subscribers()
         self._set_up_service_servers()
+        self._set_up_timers()
 
     # -------------------------------------------------------------------------
     # Initialization
@@ -79,14 +84,22 @@ class AgentBase(Node, ABC):
         self.declare_parameter("agent_id", "robot_0")
 
         self.declare_parameter("use_known_map", False)
+        self.declare_parameter("known_initial_poses", False)
 
         self.declare_parameter("target_positions", "[]")
         self.declare_parameter("target_radius", 1.0)
+
+        self.declare_parameter("tf_poll_rate", 0.05)
 
     def _set_up_state(self) -> None:
         """Set up state for the agent."""
         # Identity
         self._agent_id: str = self.get_parameter("agent_id").value
+        self._use_known_map: bool = self.get_parameter("use_known_map").value
+        self._known_initial_poses: bool = self.get_parameter("known_initial_poses").value
+
+        if self._known_initial_poses and not self._use_known_map:
+            raise ValueError("known_initial_poses requires use_known_map to be true (AMCL must be running)")
 
         # Map and belief state
         self._map: npt.NDArray[np.int8] | None = None
@@ -101,6 +114,9 @@ class AgentBase(Node, ABC):
         self._target_radius: float = self.get_parameter("target_radius").value
         self._found_targets: set[int] = set()
 
+        # Localization state
+        self._first_map_received: bool = False
+
         # Navigation state
         self._nav_status: NavStatus = NavStatus.IDLE
         self._current_nav_goal: ClientGoalHandle | None = None
@@ -108,6 +124,9 @@ class AgentBase(Node, ABC):
 
         # Pose state
         self._current_pose: Pose | None = None
+
+        self._tf_buffer: tf2_ros.Buffer = tf2_ros.Buffer()
+        self._tf_listener: tf2_ros.TransformListener = tf2_ros.TransformListener(self._tf_buffer, self)
 
     def _set_up_subscribers(self) -> None:
         """Set up subscribers for the agent."""
@@ -117,10 +136,32 @@ class AgentBase(Node, ABC):
         self.sub_lidar = self.create_subscription(
             LaserScan, f"/{self._agent_id}/base_scan", self._on_lidar_callback, 10
         )
-        self.sub_map = self.create_subscription(OccupancyGrid, f"/{self._agent_id}/map", self._on_map_updated, 10)
-        self.sub_pose = self.create_subscription(
-            PoseWithCovarianceStamped, f"/{self._agent_id}/amcl_pose", self._on_pose_updated, 10
+
+        # Map subscription
+        map_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
         )
+        self.sub_map = self.create_subscription(OccupancyGrid, f"/{self._agent_id}/map", self._on_map_updated, map_qos)
+
+        self.sub_pose = self.create_subscription(
+            PoseWithCovarianceStamped, f"/{self._agent_id}/pose", self._on_pose_updated, 10
+        )
+
+        # Initial pose subscription
+        if self._known_initial_poses:
+            initial_pose_qos = QoSProfile(
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                reliability=ReliabilityPolicy.RELIABLE,
+            )
+            self.sub_initial_pose = self.create_subscription(
+                PoseWithCovarianceStamped,
+                f"/{self._agent_id}/initialpose",
+                self._on_initial_pose_received,
+                initial_pose_qos,
+            )
 
     def _set_up_publishers(self) -> None:
         """Set up publishers for the agent."""
@@ -142,6 +183,22 @@ class AgentBase(Node, ABC):
         self._nav_client: ActionClient[NavigateToPose.Goal, NavigateToPose.Result, NavigateToPose.Feedback] = (
             ActionClient(self, NavigateToPose, f"/{self._agent_id}/navigate_to_pose")
         )
+
+    def _set_up_service_clients(self) -> None:
+        """Create service clients."""
+        if self._use_known_map and not self._known_initial_poses:
+            self._reinit_global_loc_client: Client[Empty.Request, Empty.Response] = self.create_client(
+                Empty, f"/{self._agent_id}/reinitialize_global_localization"
+            )
+        if self._known_initial_poses:
+            self._set_initial_pose_client: Client[SetInitialPose.Request, SetInitialPose.Response] = self.create_client(
+                SetInitialPose, f"/{self._agent_id}/set_initial_pose"
+            )
+
+    def _set_up_timers(self) -> None:
+        """Set up timers for the agent. Used for polling the TF from slam_toolbox."""
+        if not self._use_known_map:
+            self.create_timer(1.0 / self.get_parameter("tf_poll_rate").value, self._poll_tf_pose)
 
     # -------------------------------------------------------------------------
     # Publishing Interface
@@ -341,6 +398,40 @@ class AgentBase(Node, ABC):
         """
         self._current_pose = msg.pose.pose
 
+    def _on_initial_pose_received(self, msg: PoseWithCovarianceStamped) -> None:
+        """
+        Forward initial pose from floorplan generator to AMCL via set_initial_pose service.
+
+        AMCL does not support latched topics, so we need to use a service to facilitate the initial pose setting.
+        """
+        if not self._set_initial_pose_client.wait_for_service(timeout_sec=10.0):  # TODO: Magic number
+            self.get_logger().error("set_initial_pose service not available after 10s")
+            return
+        self.get_logger().info("Received initial pose, calling set_initial_pose service")
+        request = SetInitialPose.Request(pose=msg)
+        future = self._set_initial_pose_client.call_async(request)
+        future.add_done_callback(lambda _: self.get_logger().info("Initial pose set successfully"))
+
+    def _reinitialize_global_localization(self) -> None:
+        """Call AMCL's reinitialize_global_localization service (one-shot)."""
+        self._reinit_timer.cancel()
+        self.get_logger().info("Calling reinitialize_global_localization service")
+        self._reinit_future = self._reinit_global_loc_client.call_async(Empty.Request())
+        self._reinit_future.add_done_callback(lambda _: self.get_logger().info("Global localization reinitialized"))
+
+    def _poll_tf_pose(self) -> None:
+        """Look up the map -> {agent_id}/base_link transform and cache as _current_pose."""
+        try:
+            t = self._tf_buffer.lookup_transform("map", f"{self._agent_id}/base_link", tf2_ros.Time())
+            pose = Pose()
+            pose.position.x = t.transform.translation.x
+            pose.position.y = t.transform.translation.y
+            pose.position.z = t.transform.translation.z
+            pose.orientation = t.transform.rotation
+            self._current_pose = pose
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            self.get_logger().warn("TF not yet available for pose estimation")
+
     def _on_map_updated(self, msg: OccupancyGrid) -> None:
         """
         Map update callback.
@@ -358,6 +449,15 @@ class AgentBase(Node, ABC):
             self._eliminated = np.zeros((msg.info.height, msg.info.width), dtype=np.bool_)
         elif old_map_info is not None:
             self._expand_belief(old_map_info, msg.info)
+
+        # On the first map receipt with a known map and no known initial poses,
+        # trigger AMCL global localization after a short delay.
+        # TODO: Race condition — AMCL may not have received the map yet when the
+        # service is called. The delay is a workaround. Refactor to use lifecycle
+        # nodes so we can guarantee AMCL has the map before reinitializing.
+        if not self._first_map_received and self._use_known_map and not self._known_initial_poses:
+            self._first_map_received = True
+            self._reinit_timer = self.create_timer(2.0, self._reinitialize_global_localization)
 
         self.on_map_updated()
 
@@ -390,7 +490,6 @@ class AgentBase(Node, ABC):
 
         # Early exit if no expansion needed
         if out_h == old_info.height and out_w == old_info.width and out_ox == ox_old and out_oy == oy_old:
-            self.get_logger().info("_expand_grid is exiting early, no expansion needed")
             return grid
 
         # Create expanded array, copy old data into correct position
@@ -455,11 +554,15 @@ class AgentBase(Node, ABC):
         if self._eliminated is not None:
             grid[self._eliminated] = ELIMINATED_VALUE
         data = grid.flatten(order="C").tolist()
-        return OccupancyGrid(data=data, info=self._map_info)
+        msg = OccupancyGrid(data=data)
+        msg.info = self._map_info
+        return msg
 
     def _map_to_occupancy_grid(self, map: npt.NDArray[np.int8]) -> OccupancyGrid:
         data = map.flatten(order="C").tolist()
-        return OccupancyGrid(data=data, info=self._map_info)
+        msg = OccupancyGrid(data=data)
+        msg.info = self._map_info
+        return msg
 
     # -------------------------------------------------------------------------
     # Belief Update and Target Detection
@@ -524,7 +627,14 @@ class AgentBase(Node, ABC):
             all_rr.append(rr)
             all_cc.append(cc)
 
-        return np.concatenate(all_rr), np.concatenate(all_cc)
+        rr = np.concatenate(all_rr)
+        cc = np.concatenate(all_cc)
+
+        # Filter out-of-bounds indices (rays can extend beyond the map)
+        rows = self._map_info.height
+        cols = self._map_info.width
+        mask = (rr >= 0) & (rr < rows) & (cc >= 0) & (cc < cols)
+        return rr[mask], cc[mask]
 
     def _update_belief_from_scan(self, all_rr: npt.NDArray[np.intp], all_cc: npt.NDArray[np.intp]) -> None:
         """

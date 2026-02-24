@@ -23,6 +23,7 @@ from rclpy.client import Client
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.publisher import Publisher
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.subscription import Subscription
 from rclpy.time import Duration, Time
 from std_srvs.srv import Trigger
@@ -88,7 +89,12 @@ class CommsManager(Node):
 
     def _set_up_subscribers(self) -> None:
         """Set up subscribers for the comms manager."""
-        self.create_subscription(OccupancyGrid, "/ground_truth_map", self._on_known_map_update, 10)
+        map_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self.create_subscription(OccupancyGrid, "/ground_truth_map", self._on_known_map_update, map_qos)
 
     def _set_up_state(self) -> None:
         """Set up state for the comms manager."""
@@ -433,6 +439,30 @@ class CommsManager(Node):
         # TODO: Nav2 load map
         fuse_maps = not self.use_known_map
 
+        # Wait for all required services to be available before proceeding
+        required_clients: list[Client] = [
+            self._belief_get_clients[agent_a],
+            self._belief_get_clients[agent_b],
+            self._belief_set_clients[agent_a],
+            self._belief_set_clients[agent_b],
+            self._fusion_complete_clients[agent_a],
+            self._fusion_complete_clients[agent_b],
+        ]
+        if fuse_maps:
+            required_clients += [
+                self._map_get_clients[agent_a],
+                self._map_get_clients[agent_b],
+                self._map_set_clients[agent_a],
+                self._map_set_clients[agent_b],
+            ]
+
+        for client in required_clients:
+            if not client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().warn(
+                    f"Service {client.srv_name} not available, skipping fusion for {agent_a} and {agent_b}"
+                )
+                return
+
         get_futures: list = []
         if fuse_maps:
             map_a_future = self._map_get_clients[agent_a].call_async(GetMap.Request())
@@ -443,15 +473,20 @@ class CommsManager(Node):
         get_futures += [belief_a_future, belief_b_future]
 
         while not all(f.done() for f in get_futures):
-            self.get_logger().info("Waiting for get requests to complete for fusion...")
+            self.get_logger().info(f"Waiting for get requests to fuse {agent_a} and {agent_b}...")
             time.sleep(0.01)
 
         if any(f.result() is None for f in get_futures):
-            self.get_logger().error("Failed to get map or belief messages")
+            self.get_logger().error(f"Failed to get map or belief messages for {agent_a} and {agent_b}")
             return
 
         belief_a: OccupancyGrid = belief_a_future.result().map  # type: ignore[union-attr]
         belief_b: OccupancyGrid = belief_b_future.result().map  # type: ignore[union-attr]
+
+        if belief_a == OccupancyGrid() and belief_b == OccupancyGrid():
+            self.get_logger().warn(f"Beliefs are empty for {agent_a} and {agent_b}, skipping fusion")
+            return
+
         fused_belief = self._fuse_beliefs(belief_a, belief_b)
 
         fused_map = None
@@ -468,7 +503,7 @@ class CommsManager(Node):
         set_futures.append(self._belief_set_clients[agent_b].call_async(SetMap.Request(map=fused_belief)))
 
         while not all(f.done() for f in set_futures):
-            self.get_logger().info("Waiting for set requests to complete for fusion...")
+            self.get_logger().info(f"Waiting for set requests to fuse {agent_a} and {agent_b}...")
             time.sleep(0.01)
 
         self._fusion_complete_clients[agent_a].call_async(Trigger.Request())
@@ -483,7 +518,7 @@ class CommsManager(Node):
         Maps may have different origins and sizes; the output covers the union bounding box.
         Cells where neither map has information are output as -1 (unseen).
         """
-        res = map_a.info.resolution
+        res = map_a.info.resolution if map_a.info.resolution != 0 else map_b.info.resolution
 
         ox_a = map_a.info.origin.position.x
         oy_a = map_a.info.origin.position.y
@@ -544,7 +579,7 @@ class CommsManager(Node):
         Fusion is addition in log-odds space, clamped back to [-127, 127].
         Cells not covered by either map stay at 0 (neutral/unknown prior).
         """
-        res = belief_a.info.resolution
+        res = belief_a.info.resolution if belief_a.info.resolution != 0 else belief_b.info.resolution
 
         ox_a = belief_a.info.origin.position.x
         oy_a = belief_a.info.origin.position.y

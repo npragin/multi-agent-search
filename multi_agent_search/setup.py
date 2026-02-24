@@ -12,7 +12,15 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
-        ("share/" + package_name + "/config", ["config/config.toml", "config/robot_config.yaml"]),
+        (
+            "share/" + package_name + "/config",
+            [
+                "config/config.toml",
+                "config/robot_config.yaml",
+                "config/amcl_params.yaml",
+                "config/slam_toolbox_params.yaml",
+            ],
+        ),
         ("share/" + package_name + "/world", glob("world/*.world")),
         ("share/" + package_name + "/world/include", glob("world/include/*.inc")),
     ],
@@ -29,6 +37,8 @@ setup(
         ],
     },
     entry_points={
-        "console_scripts": [],
+        "console_scripts": [
+            "comms_manager = multi_agent_search.comms_manager:main",
+        ],
     },
 )

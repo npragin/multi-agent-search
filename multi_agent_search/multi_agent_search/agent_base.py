@@ -547,19 +547,29 @@ class AgentBase(Node, ABC):
         belief[eliminated] = -np.inf
         return belief, eliminated
 
+    def _copy_map_info(self) -> MapMetaData:
+        """Create a fresh MapMetaData from cached fields to avoid C-level assertion failures."""
+        src = self._map_info
+        info = MapMetaData()
+        info.resolution = src.resolution
+        info.width = src.width
+        info.height = src.height
+        info.origin = src.origin
+        return info
+
     def _belief_to_occupancy_grid(self, belief: npt.NDArray[np.float32]) -> OccupancyGrid:
         grid = (np.clip(belief, LOG_ODDS_MIN, LOG_ODDS_MAX) * SCALE).astype(np.int8)
         if self._eliminated is not None:
             grid[self._eliminated] = ELIMINATED_VALUE
         data = grid.flatten(order="C").tolist()
         msg = OccupancyGrid(data=data)
-        msg.info = self._map_info
+        msg.info = self._copy_map_info()
         return msg
 
     def _map_to_occupancy_grid(self, map: npt.NDArray[np.int8]) -> OccupancyGrid:
         data = map.flatten(order="C").tolist()
         msg = OccupancyGrid(data=data)
-        msg.info = self._map_info
+        msg.info = self._copy_map_info()
         return msg
 
     # -------------------------------------------------------------------------

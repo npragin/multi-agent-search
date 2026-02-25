@@ -573,18 +573,23 @@ class AgentBase(LifecycleNode, ABC):
 
     def _wait_and_set_initial_pose(self) -> TransitionCallbackReturn:
         """Wait for initial pose message, then call set_initial_pose service synchronously."""
-        timeout = 30.0  # TODO: Magic number
         elapsed = 0.0
-        while self._initial_pose_msg is None and elapsed < timeout:
+        while self._initial_pose_msg is None and elapsed < self._amcl_initialization_service_call_timeout:
             self.get_logger().info("Waiting for initial pose message...", once=True)
             time.sleep(0.01)
             elapsed += 0.01
         if self._initial_pose_msg is None:
-            self.get_logger().error(f"Initial pose not received after {timeout}s")
+            self.get_logger().error(
+                f"Initial pose not received after {self._amcl_initialization_service_call_timeout}s"
+            )
             return TransitionCallbackReturn.FAILURE
 
-        if not self._set_initial_pose_client.wait_for_service(timeout_sec=10.0):  # TODO: Magic number
-            self.get_logger().error("set_initial_pose service not available after 10s")
+        if not self._set_initial_pose_client.wait_for_service(
+            timeout_sec=self._amcl_initialization_service_call_timeout
+        ):
+            self.get_logger().error(
+                f"set_initial_pose service not available after {self._amcl_initialization_service_call_timeout}s"
+            )
             return TransitionCallbackReturn.FAILURE
 
         self.get_logger().info("Calling set_initial_pose service")
@@ -614,21 +619,21 @@ class AgentBase(LifecycleNode, ABC):
 
         self.get_logger().info("Calling reinitialize_global_localization service")
         request = Empty.Request()
-        for attempt in range(1, self._service_call_max_attempts + 1):
+        for attempt in range(1, self._amcl_initialization_service_call_max_attempts + 1):
             future = self._reinit_global_loc_client.call_async(request)
             elapsed = 0.0
-            while not future.done() and elapsed < self._service_call_timeout:
+            while not future.done() and elapsed < self._amcl_initialization_service_call_timeout:
                 time.sleep(0.01)
                 elapsed += 0.01
             if future.done():
                 self.get_logger().info("Global localization reinitialized")
                 return TransitionCallbackReturn.SUCCESS
             self.get_logger().warn(
-                f"reinitialize_global_localization attempt {attempt}/{self._service_call_max_attempts} "
+                f"reinitialize_global_localization attempt {attempt}/{self._amcl_initialization_service_call_max_attempts} "
                 "failed, retrying..."
             )
         self.get_logger().error(
-            f"reinitialize_global_localization failed after {self._service_call_max_attempts} attempts"
+            f"reinitialize_global_localization failed after {self._amcl_initialization_service_call_max_attempts} attempts"
         )
         return TransitionCallbackReturn.SUCCESS
 
@@ -792,6 +797,8 @@ class AgentBase(LifecycleNode, ABC):
             warning += " not set."
             self.get_logger().warn(warning, throttle_duration_sec=1.0)
             return
+
+        self.interrupted = True
 
         all_rr, all_cc = self._trace_scan_rays(scan)
         self._update_belief_from_scan(all_rr, all_cc)

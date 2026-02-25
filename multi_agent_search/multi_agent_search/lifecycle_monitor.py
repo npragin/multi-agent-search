@@ -6,6 +6,7 @@ from lifecycle_msgs.srv import GetState
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.client import Client
 from rclpy.node import Node
+from rclpy.timer import Timer
 
 
 class LifecycleMonitor(Node):
@@ -17,9 +18,11 @@ class LifecycleMonitor(Node):
 
         self.declare_parameter("node_names", rclpy.Parameter.Type.STRING_ARRAY)
         self.declare_parameter("timeout", 30.0)
+        self.declare_parameter("poll_interval", 1.0)
 
         node_names: list[str] = self.get_parameter("node_names").get_parameter_value().string_array_value
         timeout: float = self.get_parameter("timeout").get_parameter_value().double_value
+        poll_interval: float = self.get_parameter("poll_interval").get_parameter_value().double_value
 
         if not node_names:
             self.get_logger().error("No node_names provided")
@@ -27,6 +30,7 @@ class LifecycleMonitor(Node):
 
         self._pending: set[str] = set(node_names)
         self._cb_group = ReentrantCallbackGroup()
+        self._poll_timer: Timer | None = None
 
         for name in node_names:
             topic = f"/{name}/transition_event"
@@ -41,6 +45,7 @@ class LifecycleMonitor(Node):
 
         self._poll_current_states()
 
+        self._poll_timer = self.create_timer(poll_interval, self._poll_current_states)
         self._timeout_timer = self.create_timer(timeout, self._on_timeout)
 
     def _mark_active(self, node_name: str) -> None:
@@ -48,6 +53,8 @@ class LifecycleMonitor(Node):
         if node_name in self._pending:
             self._pending.discard(node_name)
             if not self._pending:
+                if self._poll_timer is not None:
+                    self._poll_timer.cancel()
                 self.get_logger().info("All monitored nodes are active")
                 raise SystemExit(0)
             else:

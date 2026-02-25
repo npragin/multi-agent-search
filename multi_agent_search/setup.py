@@ -39,7 +39,7 @@ setup(
     entry_points={
         "console_scripts": [
             "comms_manager = multi_agent_search.comms_manager:main",
-            "brain_dead_agent = multi_agent_search.brain_dead_agent:main",
+            "example_agent = multi_agent_search.example_agent:main",
             "stage_monitor = multi_agent_search.stage_monitor:main",
         ],
     },

@@ -8,14 +8,14 @@ from multi_agent_search.agent_base import AgentBase
 from multi_agent_search.types import BaseCoordinationMessage, HeartbeatMessage
 
 
-class BrainDeadAgent(AgentBase):
-    """Brain Dead Agent for testing the multi-agent search system."""
+class ExampleAgent(AgentBase):
+    """Example Agent for testing the multi-agent search system."""
 
     def __init__(self) -> None:
-        """Initialize the Brain Dead Agent."""
-        super().__init__("BrainDeadAgent")
+        """Initialize the Example Agent."""
+        super().__init__("ExampleAgent")
 
-        self.get_logger().info("Brain Dead Agent initialized")
+        self.get_logger().info("Initialized")
 
     def on_heartbeat(self, msg: HeartbeatMessage) -> None:
         """Handle a heartbeat."""
@@ -47,9 +47,9 @@ class BrainDeadAgent(AgentBase):
 
 
 def main(args: list[str] | None = None) -> None:
-    """Entry point for the Brain Dead Agent."""
+    """Entry point for the Example Agent."""
     rclpy.init(args=args)
-    agent = BrainDeadAgent()
+    agent = ExampleAgent()
     executor = MultiThreadedExecutor()
     executor.add_node(agent)
     executor.spin()

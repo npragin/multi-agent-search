@@ -25,8 +25,8 @@ def _validate_args(context: LaunchContext) -> list[Node]:
     return []
 
 
-def _launch_brain_dead_agents(context: LaunchContext) -> list[LifecycleNode]:
-    """Launch the brain dead agents."""
+def _launch_example_agents(context: LaunchContext) -> list[LifecycleNode]:
+    """Launch the example agents."""
     use_known_map = context.perform_substitution(LaunchConfiguration("use_known_map")).lower()
     known_initial_poses = context.perform_substitution(LaunchConfiguration("known_initial_poses")).lower()
 
@@ -42,7 +42,7 @@ def _launch_brain_dead_agents(context: LaunchContext) -> list[LifecycleNode]:
         nodes.append(
             LifecycleNode(
                 package="multi_agent_search",
-                executable="brain_dead_agent",
+                executable="example_agent",
                 name=agent_id,
                 namespace="",
                 remappings=remappings,
@@ -158,7 +158,7 @@ def generate_launch_description() -> LaunchDescription:
             on_exit=[
                 localization_launch,
                 comms_manager,
-                OpaqueFunction(function=_launch_brain_dead_agents),
+                OpaqueFunction(function=_launch_example_agents),
                 lifecycle_manager,
             ],
         )

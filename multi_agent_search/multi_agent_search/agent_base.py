@@ -15,9 +15,10 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import numpy.typing as npt
-from action_msgs.msg import GoalStatus
+from scipy.ndimage import affine_transform as scipy_affine_transform
 from skimage.draw import line as skimage_line
 
+from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Pose, PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import SetInitialPose
@@ -494,8 +495,73 @@ class AgentBase(LifecycleNode, ABC):
         Cache the latest pose from /{agent_id}/amcl_pose.
 
         Updates _current_pose so publish_heartbeat() always has a fresh value.
+        When a previous pose exists, applies a rigid-body transform to the
+        belief and eliminated grids to compensate for AMCL pose corrections.
         """
-        self._current_pose = msg.pose.pose
+        new_pose = msg.pose.pose
+        if self._current_pose is not None:
+            self._transform_belief_grids(self._current_pose, new_pose)
+        self._current_pose = new_pose
+
+    def _transform_belief_grids(self, old_pose: Pose, new_pose: Pose) -> None:
+        """
+        Apply a rigid-body transform to belief and eliminated grids to compensate for pose corrections.
+
+        Computes the delta (dx, dy, dyaw) between old and new pose, converts to
+        grid coordinates, and applies an affine transform using nearest-neighbor
+        interpolation. Out-of-bounds cells are treated as unobserved.
+        """
+        if self._belief is None or self._eliminated is None or self._map_info is None:
+            return
+
+        # Compute pose delta in world coordinates
+        dx = new_pose.position.x - old_pose.position.x
+        dy = new_pose.position.y - old_pose.position.y
+        old_yaw = 2.0 * math.atan2(old_pose.orientation.z, old_pose.orientation.w)
+        new_yaw = 2.0 * math.atan2(new_pose.orientation.z, new_pose.orientation.w)
+        dyaw = math.atan2(math.sin(new_yaw - old_yaw), math.cos(new_yaw - old_yaw))
+
+        # Convert translation to grid cells (row = y, col = x)
+        res = self._map_info.resolution
+        dr = dy / res
+        dc = dx / res
+
+        # Skip if negligible
+        if abs(dr) < 0.5 and abs(dc) < 0.5 and abs(dyaw) < 1e-3:
+            return
+
+        # Rotation center = old robot position in grid coords
+        ox = self._map_info.origin.position.x
+        oy = self._map_info.origin.position.y
+        cr = (old_pose.position.y - oy) / res
+        cc = (old_pose.position.x - ox) / res
+
+        # Inverse rotation matrix in (row, col) space for scipy's inverse mapping.
+        # In grid coords (row=y, col=x), the forward rotation has flipped off-diagonal
+        # signs vs standard (x,y) rotation, so R_grid_inv = [[cos, -sin], [sin, cos]]
+        # which is the standard form with dyaw (not -dyaw).
+        cos_d = math.cos(dyaw)
+        sin_d = math.sin(dyaw)
+        r_inv = np.array([[cos_d, -sin_d], [sin_d, cos_d]], dtype=np.float64)
+
+        # Offset: R_inv @ [-(cr+dr), -(cc+dc)]^T + [cr, cc]^T
+        shifted_center = np.array([-(cr + dr), -(cc + dc)], dtype=np.float64)
+        offset = r_inv @ shifted_center + np.array([cr, cc], dtype=np.float64)
+
+        # Transform belief grid (float32, cval=0.0 means unobserved)
+        self._belief = scipy_affine_transform(
+            self._belief, r_inv, offset=offset, order=0, mode="constant", cval=0.0, output=np.float32
+        )
+
+        # Transform eliminated grid (cast to float32, threshold back to bool)
+        elim_float = self._eliminated.astype(np.float32)
+        elim_transformed = scipy_affine_transform(
+            elim_float, r_inv, offset=offset, order=0, mode="constant", cval=0.0, output=np.float32
+        )
+        self._eliminated = elim_transformed > 0.5
+
+        # Ensure consistency: eliminated cells must have -inf belief
+        self._belief[self._eliminated] = -np.inf
 
     # -------------------------------------------------------------------------
     # Localization Initialization

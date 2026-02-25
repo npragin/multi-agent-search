@@ -18,7 +18,6 @@ import numpy.typing as npt
 from action_msgs.msg import GoalStatus
 from skimage.draw import line as skimage_line
 
-import tf2_ros
 from geometry_msgs.msg import Pose, PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import SetInitialPose
@@ -86,7 +85,6 @@ class AgentBase(LifecycleNode, ABC):
                 result = self._wait_and_reinitialize_global_localization()
             if result != TransitionCallbackReturn.SUCCESS:
                 return result
-        self._set_up_timers()
         self.get_logger().info("Activated")
         return super().on_activate(state)
 
@@ -140,8 +138,6 @@ class AgentBase(LifecycleNode, ABC):
 
         self.declare_parameter("target_positions", "[]")
         self.declare_parameter("target_radius", 1.0)
-
-        self.declare_parameter("tf_poll_rate", 0.05)
 
     def _set_up_state_defaults(self) -> None:
         """Set all instance attributes to safe defaults before on_configure."""
@@ -202,9 +198,6 @@ class AgentBase(LifecycleNode, ABC):
 
         # Pose state
         self._current_pose: Pose | None = None
-
-        self._tf_buffer: tf2_ros.Buffer = tf2_ros.Buffer()
-        self._tf_listener: tf2_ros.TransformListener = tf2_ros.TransformListener(self._tf_buffer, self)
 
     def _set_up_subscribers(self) -> None:
         """Set up subscribers for the agent."""
@@ -288,12 +281,6 @@ class AgentBase(LifecycleNode, ABC):
                 SetInitialPose, f"/{self._agent_id}/set_initial_pose", callback_group=self._localization_cbg
             )
             self._managed_service_clients.append(self._set_initial_pose_client)
-
-    def _set_up_timers(self) -> None:
-        """Set up timers for the agent. Used for polling the TF from slam_toolbox."""
-        if not self._use_known_map:
-            timer = self.create_timer(1.0 / self.get_parameter("tf_poll_rate").value, self._poll_tf_pose)
-            self._managed_timers.append(timer)
 
     # -------------------------------------------------------------------------
     # Publishing Interface
@@ -493,19 +480,6 @@ class AgentBase(LifecycleNode, ABC):
         """
         self._current_pose = msg.pose.pose
 
-    def _poll_tf_pose(self) -> None:
-        """Look up the map -> {agent_id}/base_link transform and cache as _current_pose."""
-        try:
-            t = self._tf_buffer.lookup_transform("map", f"{self._agent_id}/base_link", tf2_ros.Time())
-            pose = Pose()
-            pose.position.x = t.transform.translation.x
-            pose.position.y = t.transform.translation.y
-            pose.position.z = t.transform.translation.z
-            pose.orientation = t.transform.rotation
-            self._current_pose = pose
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            self.get_logger().warn("TF not yet available for pose estimation")
-
     # -------------------------------------------------------------------------
     # Localization Initialization
     # -------------------------------------------------------------------------
@@ -516,10 +490,10 @@ class AgentBase(LifecycleNode, ABC):
 
     def _wait_and_set_initial_pose(self) -> TransitionCallbackReturn:
         """Wait for initial pose message, then call set_initial_pose service synchronously."""
-        self.get_logger().info("Waiting for initial pose message...")
         timeout = 30.0  # TODO: Magic number
         elapsed = 0.0
         while self._initial_pose_msg is None and elapsed < timeout:
+            self.get_logger().info("Waiting for initial pose message...", once=True)
             time.sleep(0.01)
             elapsed += 0.01
         if self._initial_pose_msg is None:

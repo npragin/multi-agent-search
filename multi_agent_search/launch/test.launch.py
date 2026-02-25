@@ -59,6 +59,7 @@ def _launch_example_agents(context: LaunchContext) -> list[LifecycleNode]:
 
 def generate_launch_description() -> LaunchDescription:
     """Generate the launch description for the test."""
+    # Launch arguments
     use_known_map_arg = DeclareLaunchArgument(
         "use_known_map",
         default_value="true",
@@ -75,24 +76,18 @@ def generate_launch_description() -> LaunchDescription:
 
     pkg_share = FindPackageShare("multi_agent_search")
 
-    # Floorplan config path for floorplan generation
+    # Simulation
     floorplan_config_path = PathJoinSubstitution([pkg_share, "config", "config.toml"])
-
-    # Robot config path - defines header and robot templates
     robot_config_path = PathJoinSubstitution([pkg_share, "config", "robot_config.yaml"])
-
-    # Path to the floorplan_generator_stage launch file
-    floorplan_launch_file = PathJoinSubstitution(
+    floorplan_generator_launch_file = PathJoinSubstitution(
         [
             FindPackageShare("floorplan_generator_stage"),
             "launch",
             "floorplan_generator_stage.launch.py",
         ]
     )
-
-    # Launch the floorplan generator with one_tf_tree enabled
-    floorplan_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(floorplan_launch_file),
+    simulation_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(floorplan_generator_launch_file),
         launch_arguments={
             "floorplan_config_path": floorplan_config_path,
             "robot_config_path": robot_config_path,
@@ -101,8 +96,17 @@ def generate_launch_description() -> LaunchDescription:
             "publish_initial_poses": known_initial_poses,
         }.items(),
     )
+    floorplan_gen_world = PathJoinSubstitution([FindPackageShare("floorplan_generator_stage"), "world"])
+    set_stagepath = SetEnvironmentVariable("STAGEPATH", floorplan_gen_world)
 
-    # Localization launch (AMCL or slam_toolbox depending on use_known_map)
+    # Stage monitor exits once /clock is received, gating downstream nodes
+    stage_monitor = Node(
+        package="multi_agent_search",
+        executable="stage_monitor",
+        name="stage_monitor",
+    )
+
+    # Per-robot localization
     localization_launch_file = PathJoinSubstitution([pkg_share, "launch", "localization.launch.py"])
     localization_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(localization_launch_file),
@@ -135,7 +139,7 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
-    # nav2_lifecycle_manager handles ordered configure -> activate transitions
+    # Lifecycle manager for the search system
     lifecycle_manager = Node(
         package="nav2_lifecycle_manager",
         executable="lifecycle_manager",
@@ -148,18 +152,6 @@ def generate_launch_description() -> LaunchDescription:
             }
         ],
     )
-
-    # Stage monitor exits once /clock is received, gating downstream nodes
-    stage_monitor = Node(
-        package="multi_agent_search",
-        executable="stage_monitor",
-        name="stage_monitor",
-    )
-
-    # Stage needs STAGEPATH to find its assets (robots.inc, bitmaps, etc.)
-    # All world files are consolidated in floorplan_generator_stage/world/ by the launch file
-    floorplan_gen_world = PathJoinSubstitution([FindPackageShare("floorplan_generator_stage"), "world"])
-    set_stagepath = SetEnvironmentVariable("STAGEPATH", floorplan_gen_world)
 
     # When stage_monitor exits (Stage is up), launch localization, comms, agents, and lifecycle manager
     on_stage_ready = RegisterEventHandler(
@@ -181,7 +173,7 @@ def generate_launch_description() -> LaunchDescription:
             known_initial_poses_arg,
             OpaqueFunction(function=_validate_args),
             set_stagepath,
-            floorplan_launch,
+            simulation_launch,
             stage_monitor,
             on_stage_ready,
         ]

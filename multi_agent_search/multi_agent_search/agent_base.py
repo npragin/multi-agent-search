@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import math
 import pickle
+import time
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -24,8 +25,9 @@ from nav2_msgs.srv import SetInitialPose
 from nav_msgs.msg import MapMetaData, OccupancyGrid
 from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.client import Client
-from rclpy.node import Node
+from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.task import Future
 from sensor_msgs.msg import LaserScan
@@ -45,9 +47,9 @@ SCALE = 127.0 / LOG_ODDS_MAX  # TODO: Magic number
 ELIMINATED_VALUE = -128  # TODO: Magic number
 
 
-class AgentBase(Node, ABC):
+class AgentBase(LifecycleNode, ABC):
     """
-    Abstract base class for search agents.
+    Abstract lifecycle base class for search agents.
 
     Provides the communication interface with the CommsManager, Nav2 action
     client for navigation, belief grid management from lidar data, and target
@@ -55,25 +57,75 @@ class AgentBase(Node, ABC):
     """
 
     def __init__(self, agent_id: str) -> None:
-        """
-        Initialize base agent with ID.
-
-        Sets up publisher, subscriber, services, nav client, and timers.
-        Declares and reads ROS2 parameters for use_known_map, target_positions,
-        and target_radius.
-        """
+        """Initialize base agent with ID and declare parameters."""
         super().__init__(agent_id)
-        # TODO: Known map handling, seems we can just publish it on the same topic that slam_toolbox is using?
-        # TODO: Verify slam_toolbox map topic name
-        # TODO: Verify Nav2 navigation server name
         self._set_up_parameters()
+        self._set_up_state_defaults()
+
+    # -------------------------------------------------------------------------
+    # Lifecycle Callbacks
+    # -------------------------------------------------------------------------
+
+    def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """Configure: read params, create all interfaces (pubs/subs/services/clients)."""
         self._set_up_state()
         self._set_up_publishers()
         self._set_up_action_clients()
         self._set_up_service_clients()
         self._set_up_subscribers()
         self._set_up_service_servers()
+        self.get_logger().info("Configured")
+        return super().on_configure(state)
+
+    def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """Activate: initialize localization, start timers, enable lifecycle publishers."""
+        if self._use_known_map:
+            if self._known_initial_poses:
+                result = self._wait_and_set_initial_pose()
+            else:
+                result = self._wait_and_reinitialize_global_localization()
+            if result != TransitionCallbackReturn.SUCCESS:
+                return result
         self._set_up_timers()
+        self.get_logger().info("Activated")
+        return super().on_activate(state)
+
+    def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """Deactivate: cancel timers and navigation, disable lifecycle publishers."""
+        for timer in self._managed_timers:
+            timer.cancel()
+        self._managed_timers.clear()
+        self.cancel_navigation()
+        self.get_logger().info("Deactivated")
+        return super().on_deactivate(state)
+
+    def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """Cleanup: destroy all interfaces, reset state."""
+        self._destroy_interfaces()
+        self._set_up_state_defaults()
+        self.get_logger().info("Cleaned up")
+        return super().on_cleanup(state)
+
+    def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """Shutdown: same cleanup as on_cleanup."""
+        self._destroy_interfaces()
+        self.get_logger().info("Shut down")
+        return super().on_shutdown(state)
+
+    def _destroy_interfaces(self) -> None:
+        """Destroy all ROS2 interfaces created during configure."""
+        for timer in self._managed_timers:
+            timer.cancel()
+        for sub in self._managed_subscriptions:
+            self.destroy_subscription(sub)
+        for pub in self._managed_publishers:
+            self.destroy_publisher(pub)
+        for srv in self._managed_service_servers:
+            self.destroy_service(srv)
+        for client in self._managed_service_clients:
+            self.destroy_client(client)
+        for action_client in self._managed_action_clients:
+            action_client.destroy()
 
     # -------------------------------------------------------------------------
     # Initialization
@@ -90,6 +142,32 @@ class AgentBase(Node, ABC):
         self.declare_parameter("target_radius", 1.0)
 
         self.declare_parameter("tf_poll_rate", 0.05)
+
+    def _set_up_state_defaults(self) -> None:
+        """Set all instance attributes to safe defaults before on_configure."""
+        self._agent_id: str = ""
+        self._use_known_map: bool = False
+        self._known_initial_poses: bool = False
+        self._map: npt.NDArray[np.int8] | None = None
+        self._belief: npt.NDArray[np.float32] | None = None
+        self._eliminated: npt.NDArray[np.bool_] | None = None
+        self._map_info: MapMetaData | None = None
+        self._target_positions: list[tuple[float, float]] = []
+        self._target_radius: float = 1.0
+        self._found_targets: set[int] = set()
+        self._initial_pose_msg: PoseWithCovarianceStamped | None = None
+        self._nav_status: NavStatus = NavStatus.IDLE
+        self._current_nav_goal: ClientGoalHandle | None = None
+        self._pending_goal: PoseStamped | None = None
+        self._current_pose: Pose | None = None
+
+        # Lifecycle-managed interface lists for clean teardown
+        self._managed_timers: list[Timer] = []
+        self._managed_subscriptions: list[Subscription] = []
+        self._managed_publishers: list[Publisher] = []
+        self._managed_service_servers: list[Service] = []
+        self._managed_service_clients: list[Client] = []
+        self._managed_action_clients: list[ActionClient] = []
 
     def _set_up_state(self) -> None:
         """Set up state for the agent."""
@@ -115,7 +193,7 @@ class AgentBase(Node, ABC):
         self._found_targets: set[int] = set()
 
         # Localization state
-        self._first_map_received: bool = False
+        self._initial_pose_msg: PoseWithCovarianceStamped | None = None
 
         # Navigation state
         self._nav_status: NavStatus = NavStatus.IDLE
@@ -151,20 +229,21 @@ class AgentBase(Node, ABC):
             self._on_pose_updated,
             latched_qos if self._use_known_map else 10,  # AMCL publishes a latched topic
         )
+        self._managed_subscriptions.extend([self.sub_incoming, self.sub_lidar, self.sub_map, self.sub_pose])
 
-        # Initial pose subscription
         if self._known_initial_poses:
             self.sub_initial_pose = self.create_subscription(
-                PoseWithCovarianceStamped,
-                f"/{self._agent_id}/initialpose",
-                self._on_initial_pose_received,
-                latched_qos,
+                PoseWithCovarianceStamped, f"/{self._agent_id}/initialpose", self._on_initial_pose, latched_qos
             )
+            self._managed_subscriptions.append(self.sub_initial_pose)
 
     def _set_up_publishers(self) -> None:
-        """Set up publishers for the agent."""
-        self.pub_outgoing = self.create_publisher(AgentMessage, f"/comms/output/{self._agent_id}", 10)
-        self.pub_found_targets = self.create_publisher(Int32MultiArray, f"/{self._agent_id}/found_targets", 10)
+        """Set up lifecycle publishers for the agent (only transmit when active)."""
+        self.pub_outgoing = self.create_lifecycle_publisher(AgentMessage, f"/comms/output/{self._agent_id}", 10)
+        self.pub_found_targets = self.create_lifecycle_publisher(
+            Int32MultiArray, f"/{self._agent_id}/found_targets", 10
+        )
+        self._managed_publishers.extend([self.pub_outgoing, self.pub_found_targets])
 
     def _set_up_service_servers(self) -> None:
         """Create map/belief get/set services and fusion_complete service."""
@@ -175,28 +254,46 @@ class AgentBase(Node, ABC):
         self.srv_fusion_complete = self.create_service(
             Trigger, f"/{self._agent_id}/fusion_complete", self._handle_fusion_complete
         )
+        self._managed_service_servers.extend(
+            [
+                self.srv_get_map,
+                self.srv_set_map,
+                self.srv_get_belief,
+                self.srv_set_belief,
+                self.srv_fusion_complete,
+            ]
+        )
 
     def _set_up_action_clients(self) -> None:
         """Create NavigateToPose action client at /{agent_id}/navigate_to_pose."""
         self._nav_client: ActionClient[NavigateToPose.Goal, NavigateToPose.Result, NavigateToPose.Feedback] = (
             ActionClient(self, NavigateToPose, f"/{self._agent_id}/navigate_to_pose")
         )
+        self._managed_action_clients.append(self._nav_client)
 
     def _set_up_service_clients(self) -> None:
-        """Create service clients."""
+        """
+        Create service clients.
+
+        Localization clients use a ReentrantCallbackGroup so on_activate can poll-wait for responses without deadlocking.
+        """
+        self._localization_cbg = ReentrantCallbackGroup()
         if self._use_known_map and not self._known_initial_poses:
             self._reinit_global_loc_client: Client[Empty.Request, Empty.Response] = self.create_client(
-                Empty, f"/{self._agent_id}/reinitialize_global_localization"
+                Empty, f"/{self._agent_id}/reinitialize_global_localization", callback_group=self._localization_cbg
             )
+            self._managed_service_clients.append(self._reinit_global_loc_client)
         if self._known_initial_poses:
             self._set_initial_pose_client: Client[SetInitialPose.Request, SetInitialPose.Response] = self.create_client(
-                SetInitialPose, f"/{self._agent_id}/set_initial_pose"
+                SetInitialPose, f"/{self._agent_id}/set_initial_pose", callback_group=self._localization_cbg
             )
+            self._managed_service_clients.append(self._set_initial_pose_client)
 
     def _set_up_timers(self) -> None:
         """Set up timers for the agent. Used for polling the TF from slam_toolbox."""
         if not self._use_known_map:
-            self.create_timer(1.0 / self.get_parameter("tf_poll_rate").value, self._poll_tf_pose)
+            timer = self.create_timer(1.0 / self.get_parameter("tf_poll_rate").value, self._poll_tf_pose)
+            self._managed_timers.append(timer)
 
     # -------------------------------------------------------------------------
     # Publishing Interface
@@ -396,28 +493,6 @@ class AgentBase(Node, ABC):
         """
         self._current_pose = msg.pose.pose
 
-    def _on_initial_pose_received(self, msg: PoseWithCovarianceStamped) -> None:
-        """
-        Forward initial pose from floorplan generator to AMCL via set_initial_pose service.
-
-        AMCL does not support latched topics, so we need to use a service to facilitate the initial pose setting.
-        """
-        # TODO: Fix this when migrating to lifecycle nodes, all of this initial pose and reinit AMCL should be a part of the sequence
-        if not self._set_initial_pose_client.wait_for_service(timeout_sec=10.0):  # TODO: Magic number
-            self.get_logger().error("set_initial_pose service not available after 10s")
-            return
-        self.get_logger().info("Received initial pose, calling set_initial_pose service")
-        request = SetInitialPose.Request(pose=msg)
-        future = self._set_initial_pose_client.call_async(request)
-        future.add_done_callback(lambda _: self.get_logger().info("Initial pose set successfully"))
-
-    def _reinitialize_global_localization(self) -> None:
-        """Call AMCL's reinitialize_global_localization service (one-shot)."""
-        self._reinit_timer.cancel()
-        self.get_logger().info("Calling reinitialize_global_localization service")
-        self._reinit_future = self._reinit_global_loc_client.call_async(Empty.Request())
-        self._reinit_future.add_done_callback(lambda _: self.get_logger().info("Global localization reinitialized"))
-
     def _poll_tf_pose(self) -> None:
         """Look up the map -> {agent_id}/base_link transform and cache as _current_pose."""
         try:
@@ -430,6 +505,57 @@ class AgentBase(Node, ABC):
             self._current_pose = pose
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
             self.get_logger().warn("TF not yet available for pose estimation")
+
+    # -------------------------------------------------------------------------
+    # Localization Initialization
+    # -------------------------------------------------------------------------
+
+    def _on_initial_pose(self, msg: PoseWithCovarianceStamped) -> None:
+        """Cache initial pose message for use during on_activate."""
+        self._initial_pose_msg = msg
+
+    def _wait_and_set_initial_pose(self) -> TransitionCallbackReturn:
+        """Wait for initial pose message, then call set_initial_pose service synchronously."""
+        self.get_logger().info("Waiting for initial pose message...")
+        timeout = 30.0  # TODO: Magic number
+        elapsed = 0.0
+        while self._initial_pose_msg is None and elapsed < timeout:
+            time.sleep(0.01)
+            elapsed += 0.01
+        if self._initial_pose_msg is None:
+            self.get_logger().error(f"Initial pose not received after {timeout}s")
+            return TransitionCallbackReturn.FAILURE
+
+        if not self._set_initial_pose_client.wait_for_service(timeout_sec=10.0):  # TODO: Magic number
+            self.get_logger().error("set_initial_pose service not available after 10s")
+            return TransitionCallbackReturn.FAILURE
+
+        self.get_logger().info("Calling set_initial_pose service")
+        future = self._set_initial_pose_client.call_async(SetInitialPose.Request(pose=self._initial_pose_msg))
+        while not future.done():
+            time.sleep(0.01)
+        if future.result() is None:
+            self.get_logger().error("set_initial_pose service call failed")
+            return TransitionCallbackReturn.FAILURE
+        self.get_logger().info("Initial pose set successfully")
+        return TransitionCallbackReturn.SUCCESS
+
+    def _wait_and_reinitialize_global_localization(self) -> TransitionCallbackReturn:
+        """Call reinitialize_global_localization service synchronously."""
+        if not self._reinit_global_loc_client.wait_for_service(timeout_sec=10.0):
+            self.get_logger().error("reinitialize_global_localization service not available after 10s")
+            return TransitionCallbackReturn.FAILURE
+
+        self.get_logger().info("Calling reinitialize_global_localization service")
+        future = self._reinit_global_loc_client.call_async(Empty.Request())
+        while not future.done():
+            time.sleep(0.01)
+        self.get_logger().info("Global localization reinitialized")
+        return TransitionCallbackReturn.SUCCESS
+
+    # -------------------------------------------------------------------------
+    # Map Subscription Handler
+    # -------------------------------------------------------------------------
 
     def _on_map_updated(self, msg: OccupancyGrid) -> None:
         """
@@ -448,15 +574,6 @@ class AgentBase(Node, ABC):
             self._eliminated = np.zeros((msg.info.height, msg.info.width), dtype=np.bool_)
         elif old_map_info is not None:
             self._expand_belief(old_map_info, msg.info)
-
-        # On the first map receipt with a known map and no known initial poses,
-        # trigger AMCL global localization after a short delay.
-        # TODO: Race condition — AMCL may not have received the map yet when the
-        # service is called. The delay is a workaround. Refactor to use lifecycle
-        # nodes so we can guarantee AMCL has the map before reinitializing.
-        if not self._first_map_received and self._use_known_map and not self._known_initial_poses:
-            self._first_map_received = True
-            self._reinit_timer = self.create_timer(2.0, self._reinitialize_global_localization)
 
         self.on_map_updated()
 

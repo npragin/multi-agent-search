@@ -1,23 +1,17 @@
+"""Launch file for localization nodes."""
+
 import ast
 
-from launch.actions import (
-    DeclareLaunchArgument,
-    EmitEvent,
-    OpaqueFunction,
-    RegisterEventHandler,
-)
-from launch.event_handlers import OnProcessStart
+from launch.action import Action
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.launch_context import LaunchContext
+from launch.launch_description import LaunchDescription
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import LifecycleNode
-from launch_ros.event_handlers import OnStateTransition
-from launch_ros.events.lifecycle import ChangeState
+from launch_ros.actions import LifecycleNode, Node
 from launch_ros.substitutions import FindPackageShare
-from lifecycle_msgs.msg import Transition
-
-from launch import LaunchDescription
 
 
-def _launch_localization_nodes(context):
+def _launch_localization_nodes(context: LaunchContext) -> list[Action]:
     """Generate AMCL or slam_toolbox nodes for each robot based on use_known_map."""
     use_known_map = context.perform_substitution(LaunchConfiguration("use_known_map")).lower() == "true"
     known_initial_poses = context.perform_substitution(LaunchConfiguration("known_initial_poses")).lower() == "true"
@@ -29,7 +23,7 @@ def _launch_localization_nodes(context):
         PathJoinSubstitution([pkg_share, "config", "slam_toolbox_params.yaml"])
     )
 
-    actions = []
+    actions: list[Action] = []
 
     if use_known_map:
         for agent_id in agent_ids:
@@ -53,39 +47,22 @@ def _launch_localization_nodes(context):
                     ("map", "/ground_truth_map"),
                 ],
             )
+            actions.append(amcl_node)
 
-            # When AMCL process starts, emit configure
-            configure_event = RegisterEventHandler(
-                OnProcessStart(
-                    target_action=amcl_node,
-                    on_start=[
-                        EmitEvent(
-                            event=ChangeState(
-                                lifecycle_node_matcher=lambda msg, node=amcl_node: msg.node_name == node.node_name,
-                                transition_id=Transition.TRANSITION_CONFIGURE,
-                            )
-                        ),
-                    ],
-                )
-            )
-
-            # When AMCL finishes configuring (inactive), emit activate
-            activate_event = RegisterEventHandler(
-                OnStateTransition(
-                    target_lifecycle_node=amcl_node,
-                    goal_state="inactive",
-                    entities=[
-                        EmitEvent(
-                            event=ChangeState(
-                                lifecycle_node_matcher=lambda msg, node=amcl_node: msg.node_name == node.node_name,
-                                transition_id=Transition.TRANSITION_ACTIVATE,
-                            )
-                        ),
-                    ],
-                )
-            )
-
-            actions.extend([amcl_node, configure_event, activate_event])
+        lifecycle_manager = Node(
+            package="nav2_lifecycle_manager",
+            executable="lifecycle_manager",
+            name="localization_lifecycle_manager",
+            output="screen",
+            parameters=[
+                {
+                    "node_names": [f"{agent_id}/amcl" for agent_id in agent_ids],
+                    "autostart": True,
+                    "bond_timeout": 0.0,
+                }
+            ],
+        )
+        actions.append(lifecycle_manager)
     else:
         for agent_id in agent_ids:
             slam_node = LifecycleNode(
@@ -108,42 +85,28 @@ def _launch_localization_nodes(context):
                     ("/map_metadata", f"/{agent_id}/map_metadata"),
                 ],
             )
+            actions.append(slam_node)
 
-            configure_event = RegisterEventHandler(
-                OnProcessStart(
-                    target_action=slam_node,
-                    on_start=[
-                        EmitEvent(
-                            event=ChangeState(
-                                lifecycle_node_matcher=lambda msg, node=slam_node: msg.node_name == node.node_name,
-                                transition_id=Transition.TRANSITION_CONFIGURE,
-                            )
-                        ),
-                    ],
-                )
-            )
-
-            activate_event = RegisterEventHandler(
-                OnStateTransition(
-                    target_lifecycle_node=slam_node,
-                    goal_state="inactive",
-                    entities=[
-                        EmitEvent(
-                            event=ChangeState(
-                                lifecycle_node_matcher=lambda msg, node=slam_node: msg.node_name == node.node_name,
-                                transition_id=Transition.TRANSITION_ACTIVATE,
-                            )
-                        ),
-                    ],
-                )
-            )
-
-            actions.extend([slam_node, configure_event, activate_event])
+        lifecycle_manager = Node(
+            package="nav2_lifecycle_manager",
+            executable="lifecycle_manager",
+            name="localization_lifecycle_manager",
+            output="screen",
+            parameters=[
+                {
+                    "node_names": [f"{agent_id}/slam_toolbox" for agent_id in agent_ids],
+                    "autostart": True,
+                    "bond_timeout": 0.0,
+                }
+            ],
+        )
+        actions.append(lifecycle_manager)
 
     return actions
 
 
-def generate_launch_description():
+def generate_launch_description() -> LaunchDescription:
+    """Generate the launch description for the localization nodes."""
     return LaunchDescription(
         [
             DeclareLaunchArgument(

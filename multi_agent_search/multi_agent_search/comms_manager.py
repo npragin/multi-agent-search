@@ -21,11 +21,12 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.client import Client
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.node import Node
+from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 from rclpy.publisher import Publisher
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.subscription import Subscription
 from rclpy.time import Duration, Time
+from rclpy.timer import Timer
 from std_srvs.srv import Trigger
 
 from multi_agent_search.types import CommsConfig, CommsZone
@@ -35,9 +36,9 @@ from multi_agent_search_interfaces.srv import GetMap, SetMap
 ELIMINATED_VALUE = -128  # TODO: Magic number
 
 
-class CommsManager(Node):
+class CommsManager(LifecycleNode):
     """
-    Central communications manager that mediates all inter-agent messaging.
+    Central lifecycle communications manager that mediates all inter-agent messaging.
 
     Receives messages from agents, determines pairwise communication zones
     based on distance, and propagates messages at the appropriate rate with
@@ -46,24 +47,99 @@ class CommsManager(Node):
     """
 
     def __init__(self) -> None:
-        """
-        Initialize comms manager with known agent IDs and configuration.
-
-        Sets up all subscriptions (including ground truth pose), publishers,
-        timers, and service clients.
-        """
+        """Initialize comms manager and declare parameters."""
         super().__init__("comms_manager")
-
         self._set_up_parameters()
+        self._init_state_defaults()
+
+    def _init_state_defaults(self) -> None:
+        """Set all instance attributes to safe defaults before on_configure."""
+        self.agent_ids: set[str] = set()
+        self.agent_positions: dict[str, Point | None] = {}
+        self.known_map: npt.NDArray[np.uint8] | None = None
+        self.known_map_resolution: float | None = None
+        self.known_map_origin: Point | None = None
+        self.use_known_map: bool = False
+        self.comms_config: CommsConfig | None = None
+        self.message_buffer: dict[str, dict[str, AgentMessage]] = {}
+        self.pairwise_zones: dict[tuple[str, str], CommsZone] = {}
+        self.last_fusion_time: dict[tuple[str, str], Time] = {}
+        self._fusion_cb_group: ReentrantCallbackGroup | None = None
+        self._message_publishers: dict[str, Publisher] = {}
+        self._message_subscriptions: dict[str, Subscription] = {}
+        self._pose_subscriptions: dict[str, Subscription] = {}
+        self._map_get_clients: dict[str, Client] = {}
+        self._map_set_clients: dict[str, Client] = {}
+        self._belief_get_clients: dict[str, Client] = {}
+        self._belief_set_clients: dict[str, Client] = {}
+        self._fusion_complete_clients: dict[str, Client] = {}
+        self._load_map_clients: dict[str, Client] = {}
+        self._managed_timers: list[Timer] = []
+
+    # -------------------------------------------------------------------------
+    # Lifecycle Callbacks
+    # -------------------------------------------------------------------------
+
+    def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """Configure: read params, create all interfaces."""
         self._set_up_state()
         self._set_up_subscribers()
-
         for agent_id in self.agent_ids:
             self._set_up_agent(agent_id)
+        self.get_logger().info("Configured")
+        return super().on_configure(state)
 
+    def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """Activate: start timers, enable lifecycle publishers."""
         self._set_up_timers()
+        self.get_logger().info("Activated")
+        return super().on_activate(state)
 
-        self.get_logger().info("Comms manager initialized")
+    def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """Deactivate: cancel timers, disable lifecycle publishers."""
+        for timer in self._managed_timers:
+            timer.cancel()
+        self._managed_timers.clear()
+        self.get_logger().info("Deactivated")
+        return super().on_deactivate(state)
+
+    def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """Cleanup: destroy all interfaces, reset state."""
+        self._destroy_interfaces()
+        self._init_state_defaults()
+        self.get_logger().info("Cleaned up")
+        return super().on_cleanup(state)
+
+    def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """Shutdown: same cleanup as on_cleanup."""
+        self._destroy_interfaces()
+        self.get_logger().info("Shut down")
+        return super().on_shutdown(state)
+
+    def _destroy_interfaces(self) -> None:
+        """Destroy all ROS2 interfaces created during configure."""
+        for timer in self._managed_timers:
+            timer.cancel()
+        self._managed_timers.clear()
+
+        for sub in self._message_subscriptions.values():
+            self.destroy_subscription(sub)
+        for sub in self._pose_subscriptions.values():
+            self.destroy_subscription(sub)
+
+        for pub in self._message_publishers.values():
+            self.destroy_publisher(pub)
+
+        for client_dict in [
+            self._map_get_clients,
+            self._map_set_clients,
+            self._belief_get_clients,
+            self._belief_set_clients,
+            self._fusion_complete_clients,
+            self._load_map_clients,
+        ]:
+            for client in client_dict.values():
+                self.destroy_client(client)
 
     # -------------------------------------------------------------------------
     # Initialization
@@ -153,7 +229,9 @@ class CommsManager(Node):
         Creates subscription to agent's ground truth pose topic and publisher
         for the comms manager interface.
         """
-        self._message_publishers[agent_id] = self.create_publisher(AgentMessage, f"/comms/input/{agent_id}", 10)
+        self._message_publishers[agent_id] = self.create_lifecycle_publisher(
+            AgentMessage, f"/comms/input/{agent_id}", 10
+        )
         self._message_subscriptions[agent_id] = self.create_subscription(
             AgentMessage, f"/comms/output/{agent_id}", self._on_message, 10
         )
@@ -179,16 +257,18 @@ class CommsManager(Node):
     def _set_up_timers(self) -> None:
         """Set up timers for the comms manager."""
         close_period = 1.0 / self.comms_config.close_range_rate
-        self.create_timer(close_period, self._propagate_close_range)
+        self._managed_timers.append(self.create_timer(close_period, self._propagate_close_range))
 
         long_period = 1.0 / self.comms_config.long_range_rate
-        self.create_timer(long_period, self._propagate_long_range)
+        self._managed_timers.append(self.create_timer(long_period, self._propagate_long_range))
 
         check_fusion_period = 1.0 / self.get_parameter("check_fusion_eligibility_rate").value
-        self.create_timer(check_fusion_period, self._check_fusion_eligibility, callback_group=self._fusion_cb_group)
+        self._managed_timers.append(
+            self.create_timer(check_fusion_period, self._check_fusion_eligibility, callback_group=self._fusion_cb_group)
+        )
 
         update_pairwise_zones_period = 1.0 / self.get_parameter("update_pairwise_zones_rate").value
-        self.create_timer(update_pairwise_zones_period, self._update_pairwise_zones)
+        self._managed_timers.append(self.create_timer(update_pairwise_zones_period, self._update_pairwise_zones))
 
     # -------------------------------------------------------------------------
     # Ground Truth Tracking
@@ -394,6 +474,7 @@ class CommsManager(Node):
         for agent_a, agent_b in combinations(self.agent_ids, 2):
             if self._should_fuse(agent_a, agent_b):
                 self._perform_fusion(agent_a, agent_b)
+                self.get_logger().info(f"Fused {agent_a} and {agent_b}")
 
     def _should_fuse(self, agent_a: str, agent_b: str) -> bool:
         """

@@ -1,18 +1,22 @@
+"""Launch file for testing the multi-agent search system."""
+
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     OpaqueFunction,
+    RegisterEventHandler,
     SetEnvironmentVariable,
 )
+from launch.event_handlers import OnProcessExit
+from launch.launch_context import LaunchContext
+from launch.launch_description import LaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import Node
+from launch_ros.actions import LifecycleNode, Node
 from launch_ros.substitutions import FindPackageShare
 
-from launch import LaunchDescription
 
-
-def _validate_args(context):
+def _validate_args(context: LaunchContext) -> list[Node]:
     """Validate that known_initial_poses is not true when use_known_map is false."""
     use_known_map = context.perform_substitution(LaunchConfiguration("use_known_map")).lower() == "true"
     known_initial_poses = context.perform_substitution(LaunchConfiguration("known_initial_poses")).lower() == "true"
@@ -21,7 +25,8 @@ def _validate_args(context):
     return []
 
 
-def _launch_brain_dead_agents(context):
+def _launch_brain_dead_agents(context: LaunchContext) -> list[LifecycleNode]:
+    """Launch the brain dead agents."""
     use_known_map = context.perform_substitution(LaunchConfiguration("use_known_map")).lower()
     known_initial_poses = context.perform_substitution(LaunchConfiguration("known_initial_poses")).lower()
 
@@ -35,10 +40,11 @@ def _launch_brain_dead_agents(context):
             remappings.append((f"/{agent_id}/pose", f"/{agent_id}/amcl_pose"))
 
         nodes.append(
-            Node(
+            LifecycleNode(
                 package="multi_agent_search",
                 executable="brain_dead_agent",
                 name=agent_id,
+                namespace="",
                 remappings=remappings,
                 parameters=[
                     {"agent_id": agent_id},
@@ -51,7 +57,8 @@ def _launch_brain_dead_agents(context):
     return nodes
 
 
-def generate_launch_description():
+def generate_launch_description() -> LaunchDescription:
+    """Generate the launch description for the test."""
     use_known_map_arg = DeclareLaunchArgument(
         "use_known_map",
         default_value="true",
@@ -106,10 +113,11 @@ def generate_launch_description():
         }.items(),
     )
 
-    comms_manager = Node(
+    comms_manager = LifecycleNode(
         package="multi_agent_search",
         executable="comms_manager",
         name="comms_manager",
+        namespace="",
         parameters=[
             {"num_agents": 3},
             {"agent_ids": ["robot_0", "robot_1", "robot_2"]},
@@ -117,10 +125,44 @@ def generate_launch_description():
         ],
     )
 
+    # nav2_lifecycle_manager handles ordered configure -> activate transitions
+    lifecycle_manager = Node(
+        package="nav2_lifecycle_manager",
+        executable="lifecycle_manager",
+        name="search_lifecycle_manager",
+        parameters=[
+            {
+                "node_names": ["comms_manager", "robot_0", "robot_1", "robot_2"],
+                "autostart": True,
+                "bond_timeout": 0.0,
+            }
+        ],
+    )
+
+    # Stage monitor exits once /clock is received, gating downstream nodes
+    stage_monitor = Node(
+        package="multi_agent_search",
+        executable="stage_monitor",
+        name="stage_monitor",
+    )
+
     # Stage needs STAGEPATH to find its assets (robots.inc, bitmaps, etc.)
     # All world files are consolidated in floorplan_generator_stage/world/ by the launch file
     floorplan_gen_world = PathJoinSubstitution([FindPackageShare("floorplan_generator_stage"), "world"])
     set_stagepath = SetEnvironmentVariable("STAGEPATH", floorplan_gen_world)
+
+    # When stage_monitor exits (Stage is up), launch localization, comms, agents, and lifecycle manager
+    on_stage_ready = RegisterEventHandler(
+        OnProcessExit(
+            target_action=stage_monitor,
+            on_exit=[
+                localization_launch,
+                comms_manager,
+                OpaqueFunction(function=_launch_brain_dead_agents),
+                lifecycle_manager,
+            ],
+        )
+    )
 
     return LaunchDescription(
         [
@@ -129,8 +171,7 @@ def generate_launch_description():
             OpaqueFunction(function=_validate_args),
             set_stagepath,
             floorplan_launch,
-            localization_launch,
-            comms_manager,
-            OpaqueFunction(function=_launch_brain_dead_agents),
+            stage_monitor,
+            on_stage_ready,
         ]
     )

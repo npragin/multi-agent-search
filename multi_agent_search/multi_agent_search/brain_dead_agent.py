@@ -1,6 +1,7 @@
 """Brain Dead Agent for testing the multi-agent search system."""
 
 import rclpy
+from rclpy.executors import MultiThreadedExecutor
 from sensor_msgs.msg import LaserScan
 
 from multi_agent_search.agent_base import AgentBase
@@ -10,7 +11,7 @@ from multi_agent_search.types import BaseCoordinationMessage, HeartbeatMessage
 class BrainDeadAgent(AgentBase):
     """Brain Dead Agent for testing the multi-agent search system."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the Brain Dead Agent."""
         super().__init__("BrainDeadAgent")
 
@@ -45,10 +46,12 @@ class BrainDeadAgent(AgentBase):
         pass
 
 
-def main(args=None):
-    """Main function for the Brain Dead Agent."""
+def main(args: list[str] | None = None) -> None:
+    """Entry point for the Brain Dead Agent."""
     rclpy.init(args=args)
     agent = BrainDeadAgent()
-    rclpy.spin(agent)
+    executor = MultiThreadedExecutor()
+    executor.add_node(agent)
+    executor.spin()
     agent.destroy_node()
     rclpy.shutdown()

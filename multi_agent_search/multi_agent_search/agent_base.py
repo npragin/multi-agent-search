@@ -226,7 +226,11 @@ class AgentBase(LifecycleNode, ABC):
 
         if self._known_initial_poses:
             self.sub_initial_pose = self.create_subscription(
-                PoseWithCovarianceStamped, f"/{self._agent_id}/initialpose", self._on_initial_pose, latched_qos
+                PoseWithCovarianceStamped,
+                f"/{self._agent_id}/initialpose",
+                self._on_initial_pose,
+                latched_qos,
+                callback_group=self._localization_cbg,
             )
             self._managed_subscriptions.append(self.sub_initial_pose)
 

@@ -80,9 +80,8 @@ def _launch_system(context: LaunchContext) -> list[Node | LifecycleNode]:
         name="stage_monitor",
     )
 
-    # --- Post-stage nodes (launched after Stage is ready) ---
+    # --- Stage 1: Localization (launched after Stage is ready) ---
 
-    # Per-robot localization
     localization_launch_file = PathJoinSubstitution([pkg_share, "launch", "localization.launch.py"])
     localization_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(localization_launch_file),
@@ -93,15 +92,25 @@ def _launch_system(context: LaunchContext) -> list[Node | LifecycleNode]:
         }.items(),
     )
 
-    # Per-robot Nav2 navigation stack
-    navigation_launch_file = PathJoinSubstitution([pkg_share, "launch", "navigation.launch.py"])
-    navigation_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(navigation_launch_file),
-        launch_arguments={
-            "use_known_map": use_known_map,
-            "agent_ids": agent_ids_str,
-        }.items(),
+    loc_node_name = "amcl" if use_known_map == "true" else "slam_toolbox"
+    localization_monitor = Node(
+        package="multi_agent_search",
+        executable="lifecycle_monitor",
+        name="localization_monitor",
+        parameters=[
+            {"node_names": [f"{agent_id}/{loc_node_name}" for agent_id in agent_ids]},
+            {"timeout": 60.0},
+        ],
     )
+
+    on_stage_ready = RegisterEventHandler(
+        OnProcessExit(
+            target_action=stage_monitor,
+            on_exit=[localization_monitor, localization_launch],
+        )
+    )
+
+    # --- Stage 2: Search system (launched after localization is active) ---
 
     comms_manager = LifecycleNode(
         package="multi_agent_search",
@@ -114,7 +123,6 @@ def _launch_system(context: LaunchContext) -> list[Node | LifecycleNode]:
         ],
     )
 
-    # Example agents
     target_positions = "[[-6, 2]]"
     agent_nodes: list[LifecycleNode] = []
     for agent_id in agent_ids:
@@ -139,7 +147,6 @@ def _launch_system(context: LaunchContext) -> list[Node | LifecycleNode]:
             )
         )
 
-    # Lifecycle manager for the search system
     lifecycle_manager = Node(
         package="nav2_lifecycle_manager",
         executable="lifecycle_manager",
@@ -153,15 +160,42 @@ def _launch_system(context: LaunchContext) -> list[Node | LifecycleNode]:
         ],
     )
 
-    # When stage_monitor exits (Stage is up), launch localization, comms, agents, and lifecycle manager
-    on_stage_ready = RegisterEventHandler(
+    search_monitor = Node(
+        package="multi_agent_search",
+        executable="lifecycle_monitor",
+        name="search_monitor",
+        parameters=[
+            {"node_names": ["comms_manager", *agent_ids]},
+            {"timeout": 60.0},
+        ],
+    )
+
+    on_localization_ready = RegisterEventHandler(
         OnProcessExit(
-            target_action=stage_monitor,
-            on_exit=[localization_launch, navigation_launch, comms_manager, *agent_nodes, lifecycle_manager],
+            target_action=localization_monitor,
+            on_exit=[comms_manager, *agent_nodes, lifecycle_manager, search_monitor],
         )
     )
 
-    return [simulation_launch, stage_monitor, on_stage_ready]
+    # --- Stage 3: Navigation (launched after search system is active) ---
+
+    navigation_launch_file = PathJoinSubstitution([pkg_share, "launch", "navigation.launch.py"])
+    navigation_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(navigation_launch_file),
+        launch_arguments={
+            "use_known_map": use_known_map,
+            "agent_ids": agent_ids_str,
+        }.items(),
+    )
+
+    on_search_ready = RegisterEventHandler(
+        OnProcessExit(
+            target_action=search_monitor,
+            on_exit=[navigation_launch],
+        )
+    )
+
+    return [stage_monitor, simulation_launch, on_stage_ready, on_localization_ready, on_search_ready]
 
 
 def generate_launch_description() -> LaunchDescription:

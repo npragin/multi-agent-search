@@ -9,7 +9,15 @@ from multi_agent_search.types import BaseCoordinationMessage, HeartbeatMessage
 
 
 class ExampleAgent(AgentBase):
-    """Example Agent for testing the multi-agent search system."""
+    """
+    Example Agent for testing the multi-agent search system.
+
+    Some other functions you might use:
+    - publish_heartbeat
+    - publish_coordination_message (define your own coordination message that inherits from BaseCoordinationMessage)
+    - navigate_to
+    - cancel_navigation
+    """
 
     def __init__(self) -> None:
         """Initialize the Example Agent."""
@@ -41,8 +49,16 @@ class ExampleAgent(AgentBase):
         """Handle a fusion completion."""
         pass
 
+    def on_navigation_feedback(self, feedback: NavigateToPose.Feedback) -> None:
+        """Handle a navigation feedback."""
+        pass
+
     def on_navigation_succeeded(self) -> None:
         """Handle a navigation success."""
+        pass
+
+    def on_navigation_failed(self, reason: str) -> None:
+        """Handle a navigation failure."""
         pass
 
 

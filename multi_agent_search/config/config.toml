@@ -31,3 +31,8 @@ robot_radius = 0.255
 num_robots = {{NUM_ROBOTS}}
 robot_min_clearance = 0.5  # Minimum distance from walls and between robot edges (measured from outer edge of robot)
 spawn_export_filename = "world_config.yaml"
+
+# Target Points
+num_extra_points = {{NUM_TARGETS}}
+extra_point_radius = {{TARGET_RADIUS}}
+extra_point_min_clearance = 0.0

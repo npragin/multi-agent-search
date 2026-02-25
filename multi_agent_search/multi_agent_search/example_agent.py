@@ -1,6 +1,7 @@
 """Brain Dead Agent for testing the multi-agent search system."""
 
 import rclpy
+from nav2_msgs.action import NavigateToPose
 from rclpy.executors import MultiThreadedExecutor
 from sensor_msgs.msg import LaserScan
 

@@ -113,6 +113,16 @@ def generate_launch_description() -> LaunchDescription:
         }.items(),
     )
 
+    # Per-robot Nav2 navigation stack
+    navigation_launch_file = PathJoinSubstitution([pkg_share, "launch", "navigation.launch.py"])
+    navigation_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(navigation_launch_file),
+        launch_arguments={
+            "use_known_map": use_known_map,
+            "agent_ids": "['robot_0', 'robot_1', 'robot_2']",
+        }.items(),
+    )
+
     comms_manager = LifecycleNode(
         package="multi_agent_search",
         executable="comms_manager",
@@ -157,6 +167,7 @@ def generate_launch_description() -> LaunchDescription:
             target_action=stage_monitor,
             on_exit=[
                 localization_launch,
+                navigation_launch,
                 comms_manager,
                 OpaqueFunction(function=_launch_example_agents),
                 lifecycle_manager,

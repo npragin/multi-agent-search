@@ -10,4 +10,4 @@ header_path: world/robot_header.world
 # Supports heterogeneous robot types.
 templates:
   - path: world/pioneer2dx_with_laser_template.world
-    count: 5
+    count: {{NUM_ROBOTS}}

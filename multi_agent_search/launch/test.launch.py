@@ -1,5 +1,8 @@
 """Launch file for testing the multi-agent search system."""
 
+import tempfile
+from pathlib import Path
+
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
@@ -15,6 +18,8 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import LifecycleNode, Node
 from launch_ros.substitutions import FindPackageShare
 
+PLACEHOLDER = "{{NUM_ROBOTS}}"
+
 
 def _validate_args(context: LaunchContext) -> list[Node]:
     """Validate that known_initial_poses is not true when use_known_map is false."""
@@ -25,21 +30,100 @@ def _validate_args(context: LaunchContext) -> list[Node]:
     return []
 
 
-def _launch_example_agents(context: LaunchContext) -> list[LifecycleNode]:
-    """Launch the example agents."""
+def _resolve_config(template_path: str, num_robots: int, suffix: str) -> str:
+    """Read a config template, replace {{NUM_ROBOTS}}, and write to a temp file."""
+    content = Path(template_path).read_text()
+    content = content.replace(PLACEHOLDER, str(num_robots))
+    with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False) as tmp:
+        tmp.write(content)
+    return tmp.name
+
+
+def _launch_system(context: LaunchContext) -> list[Node | LifecycleNode]:
+    """
+    Launch the full system: simulation, stage monitor, and post-stage nodes.
+
+    Resolves num_robots to generate config files from templates and create the correct number of agent nodes.
+    """
+    num_robots = int(context.perform_substitution(LaunchConfiguration("num_robots")))
     use_known_map = context.perform_substitution(LaunchConfiguration("use_known_map")).lower()
     known_initial_poses = context.perform_substitution(LaunchConfiguration("known_initial_poses")).lower()
 
-    agent_ids = ["robot_0", "robot_1", "robot_2"]
+    agent_ids = [f"robot_{i}" for i in range(num_robots)]
+    agent_ids_str = str(agent_ids)
+
+    pkg_share = FindPackageShare("multi_agent_search")
+    pkg_share_path = context.perform_substitution(pkg_share)
+
+    # --- Simulation ---
+    floorplan_config_path = _resolve_config(f"{pkg_share_path}/config/config.toml", num_robots, ".toml")
+    robot_config_path = _resolve_config(f"{pkg_share_path}/config/robot_config.yaml", num_robots, ".yaml")
+
+    floorplan_generator_launch_file = PathJoinSubstitution(
+        [FindPackageShare("floorplan_generator_stage"), "launch", "floorplan_generator_stage.launch.py"]
+    )
+    simulation_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(floorplan_generator_launch_file),
+        launch_arguments={
+            "floorplan_config_path": floorplan_config_path,
+            "robot_config_path": robot_config_path,
+            "publish_ground_truth_map": "true",
+            "one_tf_tree": "true",
+            "publish_initial_poses": known_initial_poses,
+        }.items(),
+    )
+
+    # Stage monitor exits once /clock is received, gating downstream nodes
+    stage_monitor = Node(
+        package="multi_agent_search",
+        executable="stage_monitor",
+        name="stage_monitor",
+    )
+
+    # --- Post-stage nodes (launched after Stage is ready) ---
+
+    # Per-robot localization
+    localization_launch_file = PathJoinSubstitution([pkg_share, "launch", "localization.launch.py"])
+    localization_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(localization_launch_file),
+        launch_arguments={
+            "use_known_map": use_known_map,
+            "agent_ids": agent_ids_str,
+            "known_initial_poses": known_initial_poses,
+        }.items(),
+    )
+
+    # Per-robot Nav2 navigation stack
+    navigation_launch_file = PathJoinSubstitution([pkg_share, "launch", "navigation.launch.py"])
+    navigation_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(navigation_launch_file),
+        launch_arguments={
+            "use_known_map": use_known_map,
+            "agent_ids": agent_ids_str,
+        }.items(),
+    )
+
+    comms_manager = LifecycleNode(
+        package="multi_agent_search",
+        executable="comms_manager",
+        name="comms_manager",
+        namespace="",
+        parameters=[
+            {"agent_ids": agent_ids},
+            {"use_known_map": use_known_map == "true"},
+        ],
+    )
+
+    # Example agents
     target_positions = "[[-6, 2]]"
-    nodes = []
+    agent_nodes: list[LifecycleNode] = []
     for agent_id in agent_ids:
         remappings = []
         if use_known_map == "true":
             remappings.append((f"/{agent_id}/map", "/ground_truth_map"))
             remappings.append((f"/{agent_id}/pose", f"/{agent_id}/amcl_pose"))
 
-        nodes.append(
+        agent_nodes.append(
             LifecycleNode(
                 package="multi_agent_search",
                 executable="example_agent",
@@ -54,90 +138,6 @@ def _launch_example_agents(context: LaunchContext) -> list[LifecycleNode]:
                 ],
             )
         )
-    return nodes
-
-
-def generate_launch_description() -> LaunchDescription:
-    """Generate the launch description for the test."""
-    # Launch arguments
-    use_known_map_arg = DeclareLaunchArgument(
-        "use_known_map",
-        default_value="true",
-        description="If true, use AMCL with known map; if false, use slam_toolbox for SLAM",
-    )
-    use_known_map = LaunchConfiguration("use_known_map")
-
-    known_initial_poses_arg = DeclareLaunchArgument(
-        "known_initial_poses",
-        default_value="true",
-        description="If true, publish initial poses from floorplan generator and disable AMCL's default initial pose",
-    )
-    known_initial_poses = LaunchConfiguration("known_initial_poses")
-
-    pkg_share = FindPackageShare("multi_agent_search")
-
-    # Simulation
-    floorplan_config_path = PathJoinSubstitution([pkg_share, "config", "config.toml"])
-    robot_config_path = PathJoinSubstitution([pkg_share, "config", "robot_config.yaml"])
-    floorplan_generator_launch_file = PathJoinSubstitution(
-        [
-            FindPackageShare("floorplan_generator_stage"),
-            "launch",
-            "floorplan_generator_stage.launch.py",
-        ]
-    )
-    simulation_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(floorplan_generator_launch_file),
-        launch_arguments={
-            "floorplan_config_path": floorplan_config_path,
-            "robot_config_path": robot_config_path,
-            "publish_ground_truth_map": "true",
-            "one_tf_tree": "true",
-            "publish_initial_poses": known_initial_poses,
-        }.items(),
-    )
-    floorplan_gen_world = PathJoinSubstitution([FindPackageShare("floorplan_generator_stage"), "world"])
-    set_stagepath = SetEnvironmentVariable("STAGEPATH", floorplan_gen_world)
-
-    # Stage monitor exits once /clock is received, gating downstream nodes
-    stage_monitor = Node(
-        package="multi_agent_search",
-        executable="stage_monitor",
-        name="stage_monitor",
-    )
-
-    # Per-robot localization
-    localization_launch_file = PathJoinSubstitution([pkg_share, "launch", "localization.launch.py"])
-    localization_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(localization_launch_file),
-        launch_arguments={
-            "use_known_map": use_known_map,
-            "agent_ids": "['robot_0', 'robot_1', 'robot_2']",
-            "known_initial_poses": known_initial_poses,
-        }.items(),
-    )
-
-    # Per-robot Nav2 navigation stack
-    navigation_launch_file = PathJoinSubstitution([pkg_share, "launch", "navigation.launch.py"])
-    navigation_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(navigation_launch_file),
-        launch_arguments={
-            "use_known_map": use_known_map,
-            "agent_ids": "['robot_0', 'robot_1', 'robot_2']",
-        }.items(),
-    )
-
-    comms_manager = LifecycleNode(
-        package="multi_agent_search",
-        executable="comms_manager",
-        name="comms_manager",
-        namespace="",
-        parameters=[
-            {"num_agents": 3},
-            {"agent_ids": ["robot_0", "robot_1", "robot_2"]},
-            {"use_known_map": use_known_map},
-        ],
-    )
 
     # Lifecycle manager for the search system
     lifecycle_manager = Node(
@@ -146,7 +146,7 @@ def generate_launch_description() -> LaunchDescription:
         name="search_lifecycle_manager",
         parameters=[
             {
-                "node_names": ["comms_manager", "robot_0", "robot_1", "robot_2"],
+                "node_names": ["comms_manager", *agent_ids],
                 "autostart": True,
                 "bond_timeout": 0.0,
             }
@@ -157,24 +157,41 @@ def generate_launch_description() -> LaunchDescription:
     on_stage_ready = RegisterEventHandler(
         OnProcessExit(
             target_action=stage_monitor,
-            on_exit=[
-                localization_launch,
-                navigation_launch,
-                comms_manager,
-                OpaqueFunction(function=_launch_example_agents),
-                lifecycle_manager,
-            ],
+            on_exit=[localization_launch, navigation_launch, comms_manager, *agent_nodes, lifecycle_manager],
         )
     )
+
+    return [simulation_launch, stage_monitor, on_stage_ready]
+
+
+def generate_launch_description() -> LaunchDescription:
+    """Generate the launch description for the test."""
+    use_known_map_arg = DeclareLaunchArgument(
+        "use_known_map",
+        default_value="true",
+        description="If true, use AMCL with known map; if false, use slam_toolbox for SLAM",
+    )
+    known_initial_poses_arg = DeclareLaunchArgument(
+        "known_initial_poses",
+        default_value="true",
+        description="If true, publish initial poses from floorplan generator and disable AMCL's default initial pose",
+    )
+    num_robots_arg = DeclareLaunchArgument(
+        "num_robots",
+        default_value="3",
+        description="Number of robots to spawn (named robot_0, robot_1, ...)",
+    )
+
+    floorplan_gen_world = PathJoinSubstitution([FindPackageShare("floorplan_generator_stage"), "world"])
+    set_stagepath = SetEnvironmentVariable("STAGEPATH", floorplan_gen_world)
 
     return LaunchDescription(
         [
             use_known_map_arg,
             known_initial_poses_arg,
+            num_robots_arg,
             OpaqueFunction(function=_validate_args),
             set_stagepath,
-            simulation_launch,
-            stage_monitor,
-            on_stage_ready,
+            OpaqueFunction(function=_launch_system),
         ]
     )

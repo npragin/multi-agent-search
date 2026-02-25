@@ -28,6 +28,6 @@ obstacle_placement = "both"  # Options: "rooms", "hallways", "both"
 
 # Robot Spawn Positions
 robot_radius = 0.255
-num_robots = 5
+num_robots = {{NUM_ROBOTS}}
 robot_min_clearance = 0.5  # Minimum distance from walls and between robot edges (measured from outer edge of robot)
 spawn_export_filename = "world_config.yaml"

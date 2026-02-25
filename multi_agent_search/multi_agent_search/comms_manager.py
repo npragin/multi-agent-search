@@ -148,7 +148,7 @@ class CommsManager(LifecycleNode):
     def _set_up_parameters(self) -> None:
         """Set up parameters for the comms manager."""
         # Agent
-        self.declare_parameter("num_agents", 0)
+        self.declare_parameter("agent_ids", rclpy.Parameter.Type.STRING_ARRAY)
 
         # Problem settings
         self.declare_parameter("use_known_map", False)
@@ -177,8 +177,7 @@ class CommsManager(LifecycleNode):
     def _set_up_state(self) -> None:
         """Set up state for the comms manager."""
         # Agent tracking
-        num_agents = self.get_parameter("num_agents").value
-        self.agent_ids: set[str] = {f"robot_{i}" for i in range(num_agents)}
+        self.agent_ids: set[str] = set(self.get_parameter("agent_ids").value)
         self.agent_positions: dict[str, Point | None] = dict.fromkeys(self.agent_ids, None)
         self.known_map: npt.NDArray[np.uint8] | None = None
         self.known_map_resolution: float | None = None

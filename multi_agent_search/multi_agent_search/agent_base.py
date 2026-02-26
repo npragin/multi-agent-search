@@ -7,7 +7,6 @@ management, and target detection for concrete agent implementations.
 
 from __future__ import annotations
 
-import ast
 import math
 import pickle
 import time
@@ -31,7 +30,6 @@ from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackRet
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.task import Future
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Int32MultiArray
 from std_srvs.srv import Empty, Trigger
 
 from multi_agent_search.types import (
@@ -40,7 +38,7 @@ from multi_agent_search.types import (
     NavStatus,
 )
 from multi_agent_search_interfaces.msg import AgentMessage
-from multi_agent_search_interfaces.srv import GetMap, SetMap
+from multi_agent_search_interfaces.srv import GetMap, SetMap, TargetDetected
 
 LOG_ODDS_MIN, LOG_ODDS_MAX = -7.0, 7.0  # TODO: Magic number
 SCALE = 127.0 / LOG_ODDS_MAX  # TODO: Magic number
@@ -137,9 +135,6 @@ class AgentBase(LifecycleNode, ABC):
         self.declare_parameter("use_known_map", False)
         self.declare_parameter("known_initial_poses", False)
 
-        self.declare_parameter("target_positions", "[]")
-        self.declare_parameter("target_radius", 1.0)
-
         self.declare_parameter("amcl_initialization_service_call_timeout", 5.0)
         self.declare_parameter("amcl_initialization_service_call_max_attempts", 3)
 
@@ -152,9 +147,6 @@ class AgentBase(LifecycleNode, ABC):
         self._belief: npt.NDArray[np.float32] | None = None
         self._eliminated: npt.NDArray[np.bool_] | None = None
         self._map_info: MapMetaData | None = None
-        self._target_positions: list[tuple[float, float]] = []
-        self._target_radius: float = 1.0
-        self._found_targets: set[int] = set()
         self._amcl_initialization_service_call_timeout: float = 5.0
         self._amcl_initialization_service_call_max_attempts: int = 3
         self._initial_pose_msg: PoseWithCovarianceStamped | None = None
@@ -186,13 +178,6 @@ class AgentBase(LifecycleNode, ABC):
         self._belief: npt.NDArray[np.float32] | None = None
         self._eliminated: npt.NDArray[np.bool_] | None = None
         self._map_info: MapMetaData | None = None
-
-        # Target detection state
-        raw = self.get_parameter("target_positions").value
-        parsed = ast.literal_eval(raw)
-        self._target_positions: list[tuple[float, float]] = [(float(p[0]), float(p[1])) for p in parsed]
-        self._target_radius: float = self.get_parameter("target_radius").value
-        self._found_targets: set[int] = set()
 
         # Service call retry parameters
         self._amcl_initialization_service_call_timeout: float = self.get_parameter(
@@ -251,10 +236,7 @@ class AgentBase(LifecycleNode, ABC):
     def _set_up_publishers(self) -> None:
         """Set up lifecycle publishers for the agent (only transmit when active)."""
         self.pub_outgoing = self.create_lifecycle_publisher(AgentMessage, f"/comms/output/{self._agent_id}", 10)
-        self.pub_found_targets = self.create_lifecycle_publisher(
-            Int32MultiArray, f"/{self._agent_id}/found_targets", 10
-        )
-        self._managed_publishers.extend([self.pub_outgoing, self.pub_found_targets])
+        self._managed_publishers.append(self.pub_outgoing)
 
     def _set_up_service_servers(self) -> None:
         """Create map/belief get/set services and fusion_complete service."""
@@ -265,6 +247,9 @@ class AgentBase(LifecycleNode, ABC):
         self.srv_fusion_complete = self.create_service(
             Trigger, f"/{self._agent_id}/fusion_complete", self._handle_fusion_complete
         )
+        self.srv_target_detected = self.create_service(
+            TargetDetected, f"/{self._agent_id}/target_detected", self._handle_target_detected
+        )
         self._managed_service_servers.extend(
             [
                 self.srv_get_map,
@@ -272,6 +257,7 @@ class AgentBase(LifecycleNode, ABC):
                 self.srv_get_belief,
                 self.srv_set_belief,
                 self.srv_fusion_complete,
+                self.srv_target_detected,
             ]
         )
 
@@ -740,6 +726,15 @@ class AgentBase(LifecycleNode, ABC):
         self.on_fusion_completed()
         return response
 
+    def _handle_target_detected(
+        self, request: TargetDetected.Request, response: TargetDetected.Response
+    ) -> TargetDetected.Response:
+        """Service handler: convert TargetDetected request to on_target_detected hook call."""
+        target_locations = [(p.x, p.y) for p in request.targets]
+        self.on_target_detected(target_locations)
+        response.success = True
+        return response
+
     def _occupancy_grid_to_belief_and_eliminated(
         self, grid: OccupancyGrid
     ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.bool_]]:
@@ -802,7 +797,6 @@ class AgentBase(LifecycleNode, ABC):
 
         all_rr, all_cc = self._trace_scan_rays(scan)
         self._update_belief_from_scan(all_rr, all_cc)
-        self._check_for_targets(all_rr, all_cc)
         self.on_lidar_scan(scan)
 
     def _trace_scan_rays(self, scan: LaserScan) -> tuple[npt.NDArray[np.intp], npt.NDArray[np.intp]]:
@@ -865,57 +859,6 @@ class AgentBase(LifecycleNode, ABC):
         self._eliminated[all_rr, all_cc] = True
         self._belief[all_rr, all_cc] = -np.inf
 
-    def _check_for_targets(self, all_rr: npt.NDArray[np.intp], all_cc: npt.NDArray[np.intp]) -> None:
-        """
-        Check if any traced ray cell is within target_radius of an unfound target.
-
-        Converts cell indices to world coordinates and checks proximity.
-        When a new target is found, updates _found_targets, publishes, and
-        calls on_target_detected().
-        """
-        if not self._target_positions:
-            self.get_logger().warn("Target positions are not set, skipping target detection", once=True)
-            return
-
-        if self._map_info is None:
-            self.get_logger().warn("Map info is not set, skipping target detection", throttle_duration_sec=1.0)
-            return
-
-        unfound = [(i, pos) for i, pos in enumerate(self._target_positions) if i not in self._found_targets]
-        if not unfound:
-            self.get_logger().info("All targets found, skipping target detection", once=True)
-            return
-
-        res = self._map_info.resolution
-        ox = self._map_info.origin.position.x
-        oy = self._map_info.origin.position.y
-
-        # Convert cell indices to world coordinates (cell centers)
-        world_x = all_cc.astype(np.float64) * res + ox + res / 2.0
-        world_y = all_rr.astype(np.float64) * res + oy + res / 2.0
-
-        # Check each unfound target against all ray points
-        newly_found = []
-        radius_sq = self._target_radius**2
-        for target_idx, (tx, ty) in unfound:
-            dist_sq = (world_x - tx) ** 2 + (world_y - ty) ** 2
-            if np.any(dist_sq <= radius_sq):
-                self._found_targets.add(target_idx)
-                newly_found.append((target_idx, (tx, ty)))
-
-        if newly_found:
-            self._publish_found_targets()
-            self.on_target_detected([pos for _, pos in newly_found])
-
-    def _publish_found_targets(self) -> None:
-        """
-        Publish the current list of found target indices to /{agent_id}/found_targets.
-
-        Message contains sorted list of indices corresponding to _target_positions.
-        This topic is for external success criteria evaluation only.
-        """
-        self.pub_found_targets.publish(Int32MultiArray(data=sorted(self._found_targets)))
-
     # -------------------------------------------------------------------------
     # Abstract Callbacks (Must Implement)
     # -------------------------------------------------------------------------
@@ -946,27 +889,25 @@ class AgentBase(LifecycleNode, ABC):
     @abstractmethod
     def on_lidar_scan(self, scan: LaserScan) -> None:
         """
-        Override to handle a lidar scan received. Called after base class has updated belief and checked for targets.
+        Override to handle a lidar scan received. Called after base class has updated belief.
 
         Subclass can use this for algorithm-specific processing (e.g., frontier
-        identification) but does NOT need to handle belief updates or target detection.
+        identification) but does NOT need to handle belief updates.
         """
 
     @abstractmethod
     def on_target_detected(self, target_locations: list[tuple[float, float]]) -> None:
         """
-        Override to handle target detections. Called once per scan when new targets are found.
+        Override to handle target detections. Called when the TargetDetector node
+        notifies this agent that it has discovered new targets.
 
         Args:
-            target_locations: List of (x, y) positions for each newly detected target.
+            target_locations: List of (x, y) world positions for each newly detected target.
 
         Subclass should implement this to handle target discovery, typically by:
         - Publishing a COORDINATION message to notify other agents
         - Updating internal search state
         - Potentially triggering a rendezvous or task reassignment
-
-        Note: The base class has already updated _found_targets and published
-        to the found_targets topic before calling this hook.
 
         """
 

@@ -1,12 +1,9 @@
 """Brain Dead Agent for testing the multi-agent search system."""
 
 import rclpy
-from geometry_msgs.msg import Pose, PoseStamped
 from nav2_msgs.action import NavigateToPose
-from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Header
 
 from multi_agent_search.agent_base import AgentBase
 from multi_agent_search.types import BaseCoordinationMessage, HeartbeatMessage
@@ -38,9 +35,6 @@ class ExampleAgent(AgentBase):
         """Initialize the Example Agent."""
         super().__init__("ExampleAgent")
 
-        self.time = self.get_clock().now()
-        self.mode = 0
-
         self.get_logger().info("Initialized")
 
     def on_heartbeat(self, msg: HeartbeatMessage) -> None:
@@ -65,26 +59,7 @@ class ExampleAgent(AgentBase):
 
     def on_fusion_completed(self) -> None:
         """Handle a fusion completion."""
-        if self.agent_id == "robot_0":
-            if self.mode == 0 and self.get_clock().now() - self.time > Duration(seconds=10):
-                header = Header()
-                header.stamp = self.get_clock().now().to_msg()
-                header.frame_id = "map"
-                pose = Pose()
-                pose.position.x = 0.0
-                pose.position.y = 0.0
-                pose.position.z = 0.0
-                pose.orientation.x = 0.0
-                pose.orientation.y = 0.0
-                pose.orientation.z = 0.0
-                pose.orientation.w = 1.0
-                pose_stamped = PoseStamped()
-                pose_stamped.header = header
-                pose_stamped.pose = pose
-                self.navigate_to(pose_stamped)
-                self.mode += 1
-            if self.mode == 1:
-                pass
+        pass
 
     def on_navigation_feedback(self, feedback: NavigateToPose.Feedback) -> None:
         """Handle a navigation feedback."""

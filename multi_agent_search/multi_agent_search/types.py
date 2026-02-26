@@ -35,6 +35,7 @@ class CommsConfig:
     close_range_rate: float = 10.0  # Hz
     long_range_rate: float = 1.0  # Hz
     fusion_cooldown: float = 5.0  # seconds (unknown map mode only)
+    fusion_timeout: float = 5.0  # seconds; max time to wait for get/set service calls during fusion
 
 
 @dataclass

@@ -159,6 +159,7 @@ class CommsManager(LifecycleNode):
         self.declare_parameter("close_range_rate", 10.0)
         self.declare_parameter("long_range_rate", 1.0)
         self.declare_parameter("fusion_cooldown", 10.0)
+        self.declare_parameter("fusion_timeout", 5.0)
 
         # Updation rate settings
         self.declare_parameter("check_fusion_eligibility_rate", 1.0)
@@ -193,6 +194,7 @@ class CommsManager(LifecycleNode):
             close_range_rate=self.get_parameter("close_range_rate").value,
             long_range_rate=self.get_parameter("long_range_rate").value,
             fusion_cooldown=self.get_parameter("fusion_cooldown").value,
+            fusion_timeout=self.get_parameter("fusion_timeout").value,
         )
 
         # Message buffer: sender_id -> recipient_id -> message
@@ -495,6 +497,9 @@ class CommsManager(LifecycleNode):
         Nav2's global planning without affecting localization.
         """
         # TODO: Nav2 load map
+        if self.comms_config is None:
+            raise ValueError("Comms configuration is not set, impossible state reached")
+
         fuse_maps = not self.use_known_map
 
         # Wait for all required services to be available before proceeding
@@ -534,9 +539,16 @@ class CommsManager(LifecycleNode):
         belief_b_future = self._belief_get_clients[agent_b].call_async(GetMap.Request())
         get_futures += [belief_a_future, belief_b_future]
 
+        elapsed = 0.0
         while not all(f.done() for f in get_futures):
             self.get_logger().info(f"Waiting for get requests to fuse {agent_a} and {agent_b}...", once=True)
             time.sleep(0.01)
+            elapsed += 0.01
+            if elapsed > self.comms_config.fusion_timeout:
+                self.get_logger().error(
+                    f"Timed out waiting for get requests to fuse {agent_a} and {agent_b}, skipping fusion"
+                )
+                return
 
         if any(f.result() is None for f in get_futures):
             self.get_logger().error(f"Failed to get map or belief messages for {agent_a} and {agent_b}")
@@ -564,9 +576,14 @@ class CommsManager(LifecycleNode):
         set_futures.append(self._belief_set_clients[agent_a].call_async(SetMap.Request(map=fused_belief)))
         set_futures.append(self._belief_set_clients[agent_b].call_async(SetMap.Request(map=fused_belief)))
 
+        elapsed = 0.0
         while not all(f.done() for f in set_futures):
             self.get_logger().info(f"Waiting for set requests to fuse {agent_a} and {agent_b}...", once=True)
             time.sleep(0.01)
+            elapsed += 0.01
+            if elapsed > self.comms_config.fusion_timeout:
+                self.get_logger().error(f"Timed out waiting for set requests to fuse {agent_a} and {agent_b}")
+                return
 
         self._fusion_complete_clients[agent_a].call_async(Trigger.Request())
         self._fusion_complete_clients[agent_b].call_async(Trigger.Request())

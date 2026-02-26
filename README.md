@@ -123,11 +123,12 @@ All inter-agent communication is mediated by the `CommsManager`, which enforces 
 
 | Zone | Distance | Behavior |
 |---|---|---|
-| **Close Range** | ≤ 5m | Belief/map fusion (requires LoS) and message delivery at 10 Hz |
-| **Long Range** | 5-20m | Message delivery at 1 Hz |
+| **Fusion Range** | ≤ 5m | Belief/map fusion (requires LoS) at 1 Hz with 10s cooldown |
+| **Close Range** | ≤ 5m | Coordination and heartbeat message delivery at 10 Hz |
+| **Long Range** | 5-20m | Heartbeat message delivery at 1 Hz |
 | **Blackout** | > 20m | No communication |
 
-Thresholds and rates are configurable via parameters to the `comms_manager.py` node.
+Thresholds, rates, and cooldowns are configurable via parameters to the `comms_manager.py` node.
 
 ### Custom Coordination Messages
 

@@ -21,6 +21,17 @@ class ExampleAgent(AgentBase):
     - publish_coordination_message (define your own coordination message that inherits from BaseCoordinationMessage)
     - navigate_to
     - cancel_navigation
+
+    Some useful attributes for you to access:
+    - self.agent_id
+    - self.current_pose
+    - self.belief
+    - self.eliminated
+    - self.map
+    - self.use_known_map
+    - self.known_initial_poses
+    - self.map_info
+    - self.nav_status
     """
 
     def __init__(self) -> None:
@@ -54,7 +65,7 @@ class ExampleAgent(AgentBase):
 
     def on_fusion_completed(self) -> None:
         """Handle a fusion completion."""
-        if self._agent_id == "robot_0":
+        if self.agent_id == "robot_0":
             if self.mode == 0 and self.get_clock().now() - self.time > Duration(seconds=10):
                 header = Header()
                 header.stamp = self.get_clock().now().to_msg()

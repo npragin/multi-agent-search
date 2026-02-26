@@ -82,8 +82,8 @@ class AgentBase(LifecycleNode, ABC):
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Activate: initialize localization, start timers, enable lifecycle publishers."""
-        if self._use_known_map:
-            if self._known_initial_poses:
+        if self.use_known_map:
+            if self.known_initial_poses:
                 result = self._wait_and_set_initial_pose()
             else:
                 result = self._wait_and_reinitialize_global_localization()
@@ -145,22 +145,22 @@ class AgentBase(LifecycleNode, ABC):
 
     def _set_up_state_defaults(self) -> None:
         """Set all instance attributes to safe defaults before on_configure."""
-        self._agent_id: str = ""
-        self._use_known_map: bool = False
-        self._known_initial_poses: bool = False
-        self._map: npt.NDArray[np.int8] | None = None
-        self._belief: npt.NDArray[np.float32] | None = None
-        self._eliminated: npt.NDArray[np.bool_] | None = None
-        self._map_info: MapMetaData | None = None
+        self.agent_id: str = ""
+        self.use_known_map: bool = False
+        self.known_initial_poses: bool = False
+        self.map: npt.NDArray[np.int8] | None = None
+        self.belief: npt.NDArray[np.float32] | None = None
+        self.eliminated: npt.NDArray[np.bool_] | None = None
+        self.map_info: MapMetaData | None = None
         self._amcl_initialization_service_call_timeout: float = 5.0
         self._amcl_initialization_service_call_max_attempts: int = 3
         self._initial_pose_msg: PoseWithCovarianceStamped | None = None
-        self._nav_status: NavStatus = NavStatus.IDLE
+        self.nav_status: NavStatus = NavStatus.IDLE
         self._current_nav_goal: (
             ClientGoalHandle[NavigateToPose.Goal, NavigateToPose.Result, NavigateToPose.Feedback] | None
         ) = None
         self._pending_goal: PoseStamped | None = None
-        self._current_pose: Pose | None = None
+        self.current_pose: Pose | None = None
 
         # Lifecycle-managed interface lists for clean teardown
         self._managed_timers: list[Timer] = []
@@ -186,18 +186,18 @@ class AgentBase(LifecycleNode, ABC):
     def _set_up_state(self) -> None:
         """Set up state for the agent."""
         # Identity
-        self._agent_id = self.get_parameter("agent_id").value
-        self._use_known_map = self.get_parameter("use_known_map").value
-        self._known_initial_poses = self.get_parameter("known_initial_poses").value
+        self.agent_id = self.get_parameter("agent_id").value
+        self.use_known_map = self.get_parameter("use_known_map").value
+        self.known_initial_poses = self.get_parameter("known_initial_poses").value
 
-        if self._known_initial_poses and not self._use_known_map:
+        if self.known_initial_poses and not self.use_known_map:
             raise ValueError("known_initial_poses requires use_known_map to be true (AMCL must be running)")
 
         # Map and belief state
-        self._map = None
-        self._belief = None
-        self._eliminated = None
-        self._map_info = None
+        self.map = None
+        self.belief = None
+        self.eliminated = None
+        self.map_info = None
 
         # Service call retry parameters
         self._amcl_initialization_service_call_timeout = self.get_parameter(
@@ -211,12 +211,12 @@ class AgentBase(LifecycleNode, ABC):
         self._initial_pose_msg = None
 
         # Navigation state
-        self._nav_status = NavStatus.IDLE
+        self.nav_status = NavStatus.IDLE
         self._current_nav_goal = None
         self._pending_goal = None
 
         # Pose state
-        self._current_pose = None
+        self.current_pose = None
 
     def _set_up_subscribers(self) -> None:
         """Set up subscribers for the agent."""
@@ -226,65 +226,65 @@ class AgentBase(LifecycleNode, ABC):
             reliability=ReliabilityPolicy.RELIABLE,
         )
 
-        self.sub_incoming = self.create_subscription(
-            AgentMessage, f"/comms/input/{self._agent_id}", self._on_incoming_message, 10
+        self._sub_incoming = self.create_subscription(
+            AgentMessage, f"/comms/input/{self.agent_id}", self._on_incoming_message, 10
         )
-        self.sub_lidar = self.create_subscription(
-            LaserScan, f"/{self._agent_id}/base_scan", self._on_lidar_callback, 10
+        self._sub_lidar = self.create_subscription(
+            LaserScan, f"/{self.agent_id}/base_scan", self._on_lidar_callback, 10
         )
-        self.sub_map = self.create_subscription(
-            OccupancyGrid, f"/{self._agent_id}/map", self._on_map_updated, latched_qos
+        self._sub_map = self.create_subscription(
+            OccupancyGrid, f"/{self.agent_id}/map", self._on_map_updated, latched_qos
         )
-        self.sub_pose = self.create_subscription(
+        self._sub_pose = self.create_subscription(
             PoseWithCovarianceStamped,
-            f"/{self._agent_id}/pose",
+            f"/{self.agent_id}/pose",
             self._on_pose_updated,
-            latched_qos if self._use_known_map else 10,  # AMCL publishes a latched topic
+            latched_qos if self.use_known_map else 10,  # AMCL publishes a latched topic
         )
-        self._managed_subscriptions.extend([self.sub_incoming, self.sub_lidar, self.sub_map, self.sub_pose])
+        self._managed_subscriptions.extend([self._sub_incoming, self._sub_lidar, self._sub_map, self._sub_pose])
 
-        if self._known_initial_poses:
-            self.sub_initial_pose = self.create_subscription(
+        if self.known_initial_poses:
+            self._sub_initial_pose = self.create_subscription(
                 PoseWithCovarianceStamped,
-                f"/{self._agent_id}/initialpose",
+                f"/{self.agent_id}/initialpose",
                 self._on_initial_pose,
                 latched_qos,
                 callback_group=self._localization_cbg,
             )
-            self._managed_subscriptions.append(self.sub_initial_pose)
+            self._managed_subscriptions.append(self._sub_initial_pose)
 
     def _set_up_publishers(self) -> None:
         """Set up lifecycle publishers for the agent (only transmit when active)."""
-        self.pub_outgoing = self.create_lifecycle_publisher(AgentMessage, f"/comms/output/{self._agent_id}", 10)
-        self._managed_publishers.append(self.pub_outgoing)
+        self._pub_outgoing = self.create_lifecycle_publisher(AgentMessage, f"/comms/output/{self.agent_id}", 10)
+        self._managed_publishers.append(self._pub_outgoing)
 
     def _set_up_service_servers(self) -> None:
         """Create map/belief get/set services and fusion_complete service."""
-        self.srv_get_map = self.create_service(GetMap, f"/{self._agent_id}/get_map", self._handle_get_map)
-        self.srv_set_map = self.create_service(SetMap, f"/{self._agent_id}/set_map", self._handle_set_map)
-        self.srv_get_belief = self.create_service(GetMap, f"/{self._agent_id}/get_belief", self._handle_get_belief)
-        self.srv_set_belief = self.create_service(SetMap, f"/{self._agent_id}/set_belief", self._handle_set_belief)
-        self.srv_fusion_complete = self.create_service(
-            Trigger, f"/{self._agent_id}/fusion_complete", self._handle_fusion_complete
+        self._srv_get_map = self.create_service(GetMap, f"/{self.agent_id}/get_map", self._handle_get_map)
+        self._srv_set_map = self.create_service(SetMap, f"/{self.agent_id}/set_map", self._handle_set_map)
+        self._srv_get_belief = self.create_service(GetMap, f"/{self.agent_id}/get_belief", self._handle_get_belief)
+        self._srv_set_belief = self.create_service(SetMap, f"/{self.agent_id}/set_belief", self._handle_set_belief)
+        self._srv_fusion_complete = self.create_service(
+            Trigger, f"/{self.agent_id}/fusion_complete", self._handle_fusion_complete
         )
-        self.srv_target_detected = self.create_service(
-            TargetDetected, f"/{self._agent_id}/target_detected", self._handle_target_detected
+        self._srv_target_detected = self.create_service(
+            TargetDetected, f"/{self.agent_id}/target_detected", self._handle_target_detected
         )
         self._managed_service_servers.extend(
             [
-                self.srv_get_map,
-                self.srv_set_map,
-                self.srv_get_belief,
-                self.srv_set_belief,
-                self.srv_fusion_complete,
-                self.srv_target_detected,
+                self._srv_get_map,
+                self._srv_set_map,
+                self._srv_get_belief,
+                self._srv_set_belief,
+                self._srv_fusion_complete,
+                self._srv_target_detected,
             ]
         )
 
     def _set_up_action_clients(self) -> None:
         """Create NavigateToPose action client at /{agent_id}/navigate_to_pose."""
         self._nav_client: ActionClient[NavigateToPose.Goal, NavigateToPose.Result, NavigateToPose.Feedback] = (
-            ActionClient(self, NavigateToPose, f"/{self._agent_id}/navigate_to_pose")
+            ActionClient(self, NavigateToPose, f"/{self.agent_id}/navigate_to_pose")
         )
         self._managed_action_clients.append(self._nav_client)
 
@@ -295,14 +295,14 @@ class AgentBase(LifecycleNode, ABC):
         Localization clients use a ReentrantCallbackGroup so on_activate can poll-wait without deadlocking.
         """
         self._localization_cbg = ReentrantCallbackGroup()
-        if self._use_known_map and not self._known_initial_poses:
+        if self.use_known_map and not self.known_initial_poses:
             self._reinit_global_loc_client: Client[Empty.Request, Empty.Response] = self.create_client(
-                Empty, f"/{self._agent_id}/reinitialize_global_localization", callback_group=self._localization_cbg
+                Empty, f"/{self.agent_id}/reinitialize_global_localization", callback_group=self._localization_cbg
             )
             self._managed_service_clients.append(self._reinit_global_loc_client)
-        if self._known_initial_poses:
+        if self.known_initial_poses:
             self._set_initial_pose_client: Client[SetInitialPose.Request, SetInitialPose.Response] = self.create_client(
-                SetInitialPose, f"/{self._agent_id}/set_initial_pose", callback_group=self._localization_cbg
+                SetInitialPose, f"/{self.agent_id}/set_initial_pose", callback_group=self._localization_cbg
             )
             self._managed_service_clients.append(self._set_initial_pose_client)
 
@@ -337,13 +337,13 @@ class AgentBase(LifecycleNode, ABC):
         publish another HEARTBEAT message.
 
         """
-        if recipient == self._agent_id:
+        if recipient == self.agent_id:
             self.get_logger().info("Skipping publishing message to self")
             return
-        self.pub_outgoing.publish(
+        self._pub_outgoing.publish(
             AgentMessage(
                 msg_type=msg_type,
-                sender_id=self._agent_id,
+                sender_id=self.agent_id,
                 recipient_id=recipient,
                 overwrite_targeted=overwrite_targeted,
                 timestamp=self.get_clock().now().nanoseconds,
@@ -360,7 +360,7 @@ class AgentBase(LifecycleNode, ABC):
         pose has been received yet.
         """
         heartbeat_message = HeartbeatMessage(
-            sender_id=self._agent_id, timestamp=self.get_clock().now().nanoseconds / 1e9, pose=self._current_pose
+            sender_id=self.agent_id, timestamp=self.get_clock().now().nanoseconds / 1e9, pose=self.current_pose
         )
         self._publish_message(AgentMessage.HEARTBEAT, pickle.dumps(heartbeat_message), recipient, overwrite_targeted)
 
@@ -431,7 +431,7 @@ class AgentBase(LifecycleNode, ABC):
         if self._current_nav_goal is not None:
             self._current_nav_goal.cancel_goal_async()
         else:
-            self._nav_status = NavStatus.IDLE
+            self.nav_status = NavStatus.IDLE
 
     def _send_nav_goal(self, goal: PoseStamped) -> None:
         """Send a NavigateToPose goal to Nav2."""
@@ -448,18 +448,18 @@ class AgentBase(LifecycleNode, ABC):
         goal_handle = future.result()
         if goal_handle is None:
             self.get_logger().warn("Navigation goal handle is None")
-            self._nav_status = NavStatus.FAILED
+            self.nav_status = NavStatus.FAILED
             self._current_nav_goal = None
             self.on_navigation_failed("Goal handle is None")
             return
         elif goal_handle.accepted:
             self._current_nav_goal = goal_handle
-            self._nav_status = NavStatus.NAVIGATING
+            self.nav_status = NavStatus.NAVIGATING
             result_future = goal_handle.get_result_async()
             result_future.add_done_callback(self._on_nav_result)
         else:
             self.get_logger().warn("Navigation goal rejected")
-            self._nav_status = NavStatus.FAILED
+            self.nav_status = NavStatus.FAILED
             self._current_nav_goal = None
             self.on_navigation_failed("Navigation goal rejected")
 
@@ -473,19 +473,19 @@ class AgentBase(LifecycleNode, ABC):
         self._current_nav_goal = None
         if result is None:
             self.get_logger().warn("Navigation result is None")
-            self._nav_status = NavStatus.FAILED
+            self.nav_status = NavStatus.FAILED
             self.on_navigation_failed("Navigation result is None")
             return
         status = result.status
 
         # 1. Determine outcome and update status
         if status == GoalStatus.STATUS_SUCCEEDED:
-            self._nav_status = NavStatus.SUCCEEDED
+            self.nav_status = NavStatus.SUCCEEDED
             self.on_navigation_succeeded()
         elif status == GoalStatus.STATUS_CANCELED:
-            self._nav_status = NavStatus.IDLE
+            self.nav_status = NavStatus.IDLE
         else:
-            self._nav_status = NavStatus.FAILED
+            self.nav_status = NavStatus.FAILED
             self.on_navigation_failed(result.result.error_msg)
 
         # 2. If a new goal was queued, send it (overrides status above)
@@ -507,9 +507,9 @@ class AgentBase(LifecycleNode, ABC):
         belief and eliminated grids to compensate for AMCL pose corrections.
         """
         new_pose = msg.pose.pose
-        if self._current_pose is not None:
-            self._transform_belief_grids(self._current_pose, new_pose)
-        self._current_pose = new_pose
+        if self.current_pose is not None:
+            self._transform_belief_grids(self.current_pose, new_pose)
+        self.current_pose = new_pose
 
     def _transform_belief_grids(self, old_pose: Pose, new_pose: Pose) -> None:
         """
@@ -519,7 +519,7 @@ class AgentBase(LifecycleNode, ABC):
         grid coordinates, and applies an affine transform using nearest-neighbor
         interpolation. Out-of-bounds cells are treated as unobserved.
         """
-        if self._belief is None or self._eliminated is None or self._map_info is None:
+        if self.belief is None or self.eliminated is None or self.map_info is None:
             return
 
         # Compute pose delta in world coordinates
@@ -530,7 +530,7 @@ class AgentBase(LifecycleNode, ABC):
         dyaw = math.atan2(math.sin(new_yaw - old_yaw), math.cos(new_yaw - old_yaw))
 
         # Convert translation to grid cells (row = y, col = x)
-        res = self._map_info.resolution
+        res = self.map_info.resolution
         dr = dy / res
         dc = dx / res
 
@@ -539,8 +539,8 @@ class AgentBase(LifecycleNode, ABC):
             return
 
         # Rotation center = old robot position in grid coords
-        ox = self._map_info.origin.position.x
-        oy = self._map_info.origin.position.y
+        ox = self.map_info.origin.position.x
+        oy = self.map_info.origin.position.y
         cr = (old_pose.position.y - oy) / res
         cc = (old_pose.position.x - ox) / res
 
@@ -557,19 +557,19 @@ class AgentBase(LifecycleNode, ABC):
         offset = r_inv @ shifted_center + np.array([cr, cc], dtype=np.float64)
 
         # Transform belief grid (float32, cval=0.0 means unobserved)
-        self._belief = scipy_affine_transform(
-            self._belief, r_inv, offset=offset, order=0, mode="constant", cval=0.0, output=np.float32
+        self.belief = scipy_affine_transform(
+            self.belief, r_inv, offset=offset, order=0, mode="constant", cval=0.0, output=np.float32
         )
 
         # Transform eliminated grid (cast to float32, threshold back to bool)
-        elim_float = self._eliminated.astype(np.float32)
+        elim_float = self.eliminated.astype(np.float32)
         elim_transformed = scipy_affine_transform(
             elim_float, r_inv, offset=offset, order=0, mode="constant", cval=0.0, output=np.float32
         )
-        self._eliminated = elim_transformed > 0.5
+        self.eliminated = elim_transformed > 0.5
 
         # Ensure consistency: eliminated cells must have -inf belief
-        self._belief[self._eliminated] = -np.inf
+        self.belief[self.eliminated] = -np.inf
 
     # -------------------------------------------------------------------------
     # Localization Initialization
@@ -646,13 +646,13 @@ class AgentBase(LifecycleNode, ABC):
         known-map node. Expands the belief grid to cover the union of old and
         new map extents. Calls on_map_updated() hook after updating.
         """
-        old_map_info = self._map_info
-        self._map = np.array(msg.data, dtype=np.int8).reshape(msg.info.height, msg.info.width)
-        self._map_info = msg.info
+        old_map_info = self.map_info
+        self.map = np.array(msg.data, dtype=np.int8).reshape(msg.info.height, msg.info.width)
+        self.map_info = msg.info
 
-        if self._belief is None:
-            self._belief = np.zeros((msg.info.height, msg.info.width), dtype=np.float32)
-            self._eliminated = np.zeros((msg.info.height, msg.info.width), dtype=np.bool_)
+        if self.belief is None:
+            self.belief = np.zeros((msg.info.height, msg.info.width), dtype=np.float32)
+            self.eliminated = np.zeros((msg.info.height, msg.info.width), dtype=np.bool_)
         elif old_map_info is not None:
             self._expand_belief(old_map_info, msg.info)
 
@@ -660,10 +660,10 @@ class AgentBase(LifecycleNode, ABC):
 
     def _expand_belief(self, old_info: MapMetaData, new_info: MapMetaData) -> None:
         """Expand belief and eliminated arrays to cover the union of old and new map extents."""
-        if self._belief is None or self._eliminated is None:
+        if self.belief is None or self.eliminated is None:
             raise ValueError("Belief and eliminated arrays must be initialized before expanding")
-        self._belief = self._expand_grid(self._belief, old_info, new_info)
-        self._eliminated = self._expand_grid(self._eliminated, old_info, new_info)
+        self.belief = self._expand_grid(self.belief, old_info, new_info)
+        self.eliminated = self._expand_grid(self.eliminated, old_info, new_info)
 
     @overload
     def _expand_grid(
@@ -726,22 +726,22 @@ class AgentBase(LifecycleNode, ABC):
 
     def _handle_get_map(self, request: GetMap.Request, response: GetMap.Response) -> object:
         """Service handler: return current environment map."""
-        if self._map is not None:
-            response.map = self._map_to_occupancy_grid(self._map)
+        if self.map is not None:
+            response.map = self._map_to_occupancy_grid(self.map)
         return response
 
     def _handle_set_map(self, request: SetMap.Request, response: SetMap.Response) -> object:
-        self._map = np.array(request.map.data, dtype=np.int8).reshape(request.map.info.height, request.map.info.width)
+        self.map = np.array(request.map.data, dtype=np.int8).reshape(request.map.info.height, request.map.info.width)
         return response
 
     def _handle_get_belief(self, request: GetMap.Request, response: GetMap.Response) -> object:
         """Service handler: return current belief/coverage grid."""
-        if self._belief is not None and self._eliminated is not None:
-            response.map = self._belief_and_eliminated_to_occupancy_grid(self._belief, self._eliminated)
+        if self.belief is not None and self.eliminated is not None:
+            response.map = self._belief_and_eliminated_to_occupancy_grid(self.belief, self.eliminated)
         return response
 
     def _handle_set_belief(self, request: SetMap.Request, response: SetMap.Response) -> object:
-        self._belief, self._eliminated = self._occupancy_grid_to_belief_and_eliminated(request.map)
+        self.belief, self.eliminated = self._occupancy_grid_to_belief_and_eliminated(request.map)
         return response
 
     def _handle_fusion_complete(self, request: object, response: object) -> object:
@@ -773,7 +773,7 @@ class AgentBase(LifecycleNode, ABC):
 
     def _copy_map_info(self) -> MapMetaData:
         """Create a fresh MapMetaData from cached fields to avoid C-level assertion failures."""
-        src = self._map_info
+        src = self.map_info
         info = MapMetaData()
         if src is not None:
             info.resolution = src.resolution
@@ -810,11 +810,11 @@ class AgentBase(LifecycleNode, ABC):
         1. Updates belief/coverage grid via _update_belief_from_scan
         2. Forwards to subclass via on_lidar_scan for algorithm-specific processing
         """
-        if self._current_pose is None or self._belief is None or self._map_info is None or self._eliminated is None:
+        if self.current_pose is None or self.belief is None or self.map_info is None or self.eliminated is None:
             warning = "_on_lidar_callback is exiting early: "
-            if self._current_pose is None:
+            if self.current_pose is None:
                 warning += "pose, "
-            if self._belief is None or self._eliminated is None or self._map_info is None:
+            if self.belief is None or self.eliminated is None or self.map_info is None:
                 warning += "map data, "
             warning = warning.rstrip(", ")
             warning += " not set."
@@ -833,12 +833,12 @@ class AgentBase(LifecycleNode, ABC):
         Sets belief to -inf and marks cells as eliminated for every cell
         touched by the pre-traced rays.
         """
-        if self._eliminated is None or self._belief is None:
+        if self.eliminated is None or self.belief is None:
             raise ValueError("Eliminated and belief arrays must be initialized before updating")
 
         all_rr, all_cc = self._trace_scan_rays(scan)
-        self._eliminated[all_rr, all_cc] = True
-        self._belief[all_rr, all_cc] = -np.inf
+        self.eliminated[all_rr, all_cc] = True
+        self.belief[all_rr, all_cc] = -np.inf
 
     def _trace_scan_rays(self, scan: LaserScan) -> tuple[npt.NDArray[np.intp], npt.NDArray[np.intp]]:
         """
@@ -847,17 +847,17 @@ class AgentBase(LifecycleNode, ABC):
         Return the concatenated (row, col) arrays for every cell touched by
         every finite-range beam in the scan.
         """
-        if self._current_pose is None or self._map_info is None:
+        if self.current_pose is None or self.map_info is None:
             raise ValueError("Current pose and map info must be set before tracing scan rays")
 
-        pose = self._current_pose
+        pose = self.current_pose
         robot_x = pose.position.x
         robot_y = pose.position.y
         robot_yaw = 2.0 * math.atan2(pose.orientation.z, pose.orientation.w)
 
-        res = self._map_info.resolution
-        ox = self._map_info.origin.position.x
-        oy = self._map_info.origin.position.y
+        res = self.map_info.resolution
+        ox = self.map_info.origin.position.x
+        oy = self.map_info.origin.position.y
 
         robot_row = int((robot_y - oy) / res)
         robot_col = int((robot_x - ox) / res)
@@ -883,8 +883,8 @@ class AgentBase(LifecycleNode, ABC):
         cc = np.concatenate(all_cc)
 
         # Filter out-of-bounds indices (rays can extend beyond the map)
-        rows = self._map_info.height
-        cols = self._map_info.width
+        rows = self.map_info.height
+        cols = self.map_info.width
         mask = (rr >= 0) & (rr < rows) & (cc >= 0) & (cc < cols)
         return rr[mask], cc[mask]
 

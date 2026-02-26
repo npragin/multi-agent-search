@@ -214,7 +214,7 @@ def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode 
         name="search_lifecycle_manager",
         parameters=[
             {
-                "node_names": ["comms_manager", *agent_ids, "target_detector"],
+                "node_names": ["comms_manager", "target_detector", *agent_ids],
                 "autostart": True,
                 "bond_timeout": 0.0,
             }
@@ -226,7 +226,7 @@ def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode 
         executable="lifecycle_monitor",
         name="search_monitor",
         parameters=[
-            {"node_names": ["comms_manager", *agent_ids, "target_detector"]},
+            {"node_names": ["comms_manager", "target_detector", *agent_ids]},
             {"timeout": 60.0},
         ],
     )
@@ -249,7 +249,7 @@ def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode 
         )
     )
 
-    return [comms_manager, *agent_nodes, target_detector, lifecycle_manager, search_monitor, on_search_ready]
+    return [comms_manager, target_detector, *agent_nodes, lifecycle_manager, search_monitor, on_search_ready]
 
 
 def generate_launch_description() -> LaunchDescription:

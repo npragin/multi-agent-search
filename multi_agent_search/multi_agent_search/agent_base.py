@@ -661,6 +661,7 @@ class AgentBase(LifecycleNode, ABC):
         elif old_map_info is not None:
             self._expand_belief(old_map_info, msg.info)
 
+        self._eliminate_obstacle_cells()
         self.on_map_updated()
 
     def _expand_belief(self, old_info: MapMetaData, new_info: MapMetaData) -> None:
@@ -724,6 +725,22 @@ class AgentBase(LifecycleNode, ABC):
         expanded[row_off : row_off + old_info.height, col_off : col_off + old_info.width] = grid
 
         return expanded
+
+    def _eliminate_obstacle_cells(self) -> None:
+        """
+        Eliminate cells that cannot contain a target based on occupancy values.
+
+        In known-map mode: eliminates cells with value 100 (occupied) or -1 (unknown).
+        In unknown-map mode: eliminates only cells with value 100 (occupied),
+        leaving -1 (unknown) cells as unobserved.
+        """
+        if self.map is None or self.belief is None or self.eliminated is None:
+            return
+
+        obstacle_mask = (self.map == 100) | (self.map == -1) if self.use_known_map else self.map == 100
+
+        self.eliminated[obstacle_mask] = True
+        self.belief[obstacle_mask] = -np.inf
 
     # -------------------------------------------------------------------------
     # Service Handlers

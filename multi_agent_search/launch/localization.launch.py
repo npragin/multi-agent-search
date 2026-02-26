@@ -7,7 +7,7 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.launch_context import LaunchContext
 from launch.launch_description import LaunchDescription
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import LifecycleNode, Node
+from launch_ros.actions import LifecycleNode, Node, SetParameter
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -123,6 +123,7 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="false",
                 description="If true, disable AMCL's default initial pose so it waits for /initialpose",
             ),
+            SetParameter("use_sim_time", True),
             OpaqueFunction(function=_launch_localization_nodes),
         ]
     )

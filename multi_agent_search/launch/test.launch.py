@@ -17,7 +17,7 @@ from launch.launch_context import LaunchContext
 from launch.launch_description import LaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import LifecycleNode, Node
+from launch_ros.actions import LifecycleNode, Node, SetParameter
 from launch_ros.substitutions import FindPackageShare
 
 NUM_ROBOTS_PLACEHOLDER = "{{NUM_ROBOTS}}"
@@ -290,6 +290,7 @@ def generate_launch_description() -> LaunchDescription:
             num_robots_arg,
             num_targets_arg,
             target_radius_arg,
+            SetParameter("use_sim_time", True),
             OpaqueFunction(function=_validate_args),
             set_stagepath,
             OpaqueFunction(function=_launch_system),

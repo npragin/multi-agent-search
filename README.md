@@ -8,12 +8,14 @@ This repository contains multiple packages. The core package discussed in this R
 
 ## Setup
 
-**Requirements:** ROS2 Kilted, Python 3.12
+**Requirements:** ROS2 Kilted, Python 3.12, Stage, stage_ros2
 
-Clone with submodules:
+Clone with submodules into a ROS workspace:
 
 ```bash
-git clone --recurse-submodules <repo-url>
+mkdir -p ~/multi_agent_search_ws
+cd ~/multi_agent_search_ws
+git clone --recurse-submodules <repo-url> src
 ```
 
 Build from the workspace root:

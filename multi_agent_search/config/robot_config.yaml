@@ -1,5 +1,5 @@
 # Source package whose world/ directory contains necessary world files/templates.
-source_package: example_usage
+source_package: multi_agent_search
 
 # Optional: header file to insert at top of world file (for includes, definitions)
 # Path is relative to source_package share directory

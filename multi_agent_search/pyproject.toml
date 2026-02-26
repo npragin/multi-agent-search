@@ -41,6 +41,8 @@ ros = ["rclpy", "rcl_interfaces", "geometry_msgs", "nav_msgs", "nav2_msgs", "sen
 [tool.mypy]
 python_version = "3.13"
 
+exclude = ["^test/"]
+
 check_untyped_defs = true
 
 disallow_untyped_calls = true

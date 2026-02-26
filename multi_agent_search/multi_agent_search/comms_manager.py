@@ -25,6 +25,7 @@ from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackRet
 from rclpy.publisher import Publisher
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.subscription import Subscription
+from rclpy.task import Future
 from rclpy.time import Duration, Time
 from rclpy.timer import Timer
 from std_srvs.srv import Trigger
@@ -65,15 +66,14 @@ class CommsManager(LifecycleNode):
         self.pairwise_zones: dict[tuple[str, str], CommsZone] = {}
         self.last_fusion_time: dict[tuple[str, str], Time] = {}
         self._fusion_cb_group: ReentrantCallbackGroup | None = None
-        self._message_publishers: dict[str, Publisher] = {}
-        self._message_subscriptions: dict[str, Subscription] = {}
-        self._pose_subscriptions: dict[str, Subscription] = {}
-        self._map_get_clients: dict[str, Client] = {}
-        self._map_set_clients: dict[str, Client] = {}
-        self._belief_get_clients: dict[str, Client] = {}
-        self._belief_set_clients: dict[str, Client] = {}
-        self._fusion_complete_clients: dict[str, Client] = {}
-        self._load_map_clients: dict[str, Client] = {}
+        self._message_publishers: dict[str, Publisher[AgentMessage]] = {}
+        self._message_subscriptions: dict[str, Subscription[AgentMessage]] = {}
+        self._pose_subscriptions: dict[str, Subscription[Odometry]] = {}
+        self._map_get_clients: dict[str, Client[GetMap.Request, GetMap.Response]] = {}
+        self._map_set_clients: dict[str, Client[SetMap.Request, SetMap.Response]] = {}
+        self._belief_get_clients: dict[str, Client[GetMap.Request, GetMap.Response]] = {}
+        self._belief_set_clients: dict[str, Client[SetMap.Request, SetMap.Response]] = {}
+        self._fusion_complete_clients: dict[str, Client[Trigger.Request, Trigger.Response]] = {}
         self._managed_timers: list[Timer] = []
 
     # -------------------------------------------------------------------------
@@ -136,7 +136,6 @@ class CommsManager(LifecycleNode):
             self._belief_get_clients,
             self._belief_set_clients,
             self._fusion_complete_clients,
-            self._load_map_clients,
         ]:
             for client in client_dict.values():
                 self.destroy_client(client)
@@ -177,11 +176,11 @@ class CommsManager(LifecycleNode):
     def _set_up_state(self) -> None:
         """Set up state for the comms manager."""
         # Agent tracking
-        self.agent_ids: set[str] = set(self.get_parameter("agent_ids").value)
-        self.agent_positions: dict[str, Point | None] = dict.fromkeys(self.agent_ids, None)
-        self.known_map: npt.NDArray[np.uint8] | None = None
-        self.known_map_resolution: float | None = None
-        self.known_map_origin: Point | None = None
+        self.agent_ids = set(self.get_parameter("agent_ids").value)
+        self.agent_positions = dict.fromkeys(self.agent_ids, None)
+        self.known_map = None
+        self.known_map_resolution = None
+        self.known_map_origin = None
 
         # Problem settings
         self.use_known_map = self.get_parameter("use_known_map").value
@@ -198,28 +197,28 @@ class CommsManager(LifecycleNode):
 
         # Message buffer: sender_id -> recipient_id -> message
         # recipient_id of "" (empty string) represents broadcast
-        self.message_buffer: dict[str, dict[str, AgentMessage]] = {}
+        self.message_buffer = {}
 
         # Communication zone cache: (agent_a, agent_b) sorted tuple -> zone
-        self.pairwise_zones: dict[tuple[str, str], CommsZone] = {}
+        self.pairwise_zones = {}
 
         # Map fusion tracking: (agent_a, agent_b) sorted tuple -> time
-        self.last_fusion_time: dict[tuple[str, str], Time] = {}
+        self.last_fusion_time = {}
 
         # Callback group for fusion-related clients and timer so they can
         # be processed concurrently with the timer callback that awaits them.
         self._fusion_cb_group = ReentrantCallbackGroup()
 
         # Per-agent ROS2 interfaces (populated by _setup_agent)
-        self._message_publishers: dict[str, Publisher] = {}
-        self._message_subscriptions: dict[str, Subscription] = {}
-        self._pose_subscriptions: dict[str, Subscription] = {}
-        self._map_get_clients: dict[str, Client] = {}
-        self._map_set_clients: dict[str, Client] = {}
-        self._belief_get_clients: dict[str, Client] = {}
-        self._belief_set_clients: dict[str, Client] = {}
-        self._fusion_complete_clients: dict[str, Client] = {}
-        self._load_map_clients: dict[str, Client] = {}
+        self._message_publishers = {}
+        self._message_subscriptions = {}
+        self._pose_subscriptions = {}
+        self._map_get_clients = {}
+        self._map_set_clients = {}
+        self._belief_get_clients = {}
+        self._belief_set_clients = {}
+        self._fusion_complete_clients = {}
+        self._managed_timers = []
 
     def _set_up_agent(self, agent_id: str) -> None:
         """
@@ -255,6 +254,8 @@ class CommsManager(LifecycleNode):
 
     def _set_up_timers(self) -> None:
         """Set up timers for the comms manager."""
+        if self.comms_config is None:
+            raise ValueError("Comms configuration is not set, impossible state reached")
         close_period = 1.0 / self.comms_config.close_range_rate
         self._managed_timers.append(
             self.create_timer(close_period, lambda: self._propagate_messages(CommsZone.CLOSE_RANGE))
@@ -410,6 +411,9 @@ class CommsManager(LifecycleNode):
 
         Note: Line-of-sight is only checked for fusion eligibility, not communication.
         """
+        if self.comms_config is None:
+            raise ValueError("Comms configuration is not set, impossible state reached")
+
         distance = self._get_distance(agent_a, agent_b)
         if distance > self.comms_config.long_range_threshold:
             return CommsZone.BLACKOUT
@@ -426,7 +430,7 @@ class CommsManager(LifecycleNode):
         if agent_a_indices is None or agent_b_indices is None or known_map is None:
             return False
 
-        r0, c0 = skimage_line(agent_a_indices[0], agent_a_indices[1], agent_b_indices[0], agent_b_indices[1])
+        r0, c0 = skimage_line(agent_a_indices[0], agent_a_indices[1], agent_b_indices[0], agent_b_indices[1])  # type: ignore[no-untyped-call]
         obstacle_in_los = np.any(known_map[r0, c0] == 100)  # TODO: Magic number
         return not obstacle_in_los
 
@@ -454,6 +458,9 @@ class CommsManager(LifecycleNode):
         - Agents have line-of-sight
         - Cooldown period has elapsed since last fusion
         """
+        if self.comms_config is None:
+            raise ValueError("Comms configuration is not set, impossible state reached")
+
         distance_check = self._get_distance(agent_a, agent_b) <= self.comms_config.fusion_range_threshold
 
         line_of_sight_check = self._has_line_of_sight(agent_a, agent_b)
@@ -491,7 +498,11 @@ class CommsManager(LifecycleNode):
         fuse_maps = not self.use_known_map
 
         # Wait for all required services to be available before proceeding
-        required_clients: list[Client] = [
+        required_clients: list[
+            Client[GetMap.Request, GetMap.Response]
+            | Client[SetMap.Request, SetMap.Response]
+            | Client[Trigger.Request, Trigger.Response]
+        ] = [
             self._belief_get_clients[agent_a],
             self._belief_get_clients[agent_b],
             self._belief_set_clients[agent_a],
@@ -514,7 +525,7 @@ class CommsManager(LifecycleNode):
                 )
                 return
 
-        get_futures: list = []
+        get_futures: list[Future[GetMap.Response]] = []
         if fuse_maps:
             map_a_future = self._map_get_clients[agent_a].call_async(GetMap.Request())
             map_b_future = self._map_get_clients[agent_b].call_async(GetMap.Request())
@@ -546,7 +557,7 @@ class CommsManager(LifecycleNode):
             map_b: OccupancyGrid = map_b_future.result().map  # type: ignore[union-attr]
             fused_map = self._fuse_maps(map_a, map_b)
 
-        set_futures: list = []
+        set_futures: list[Future[SetMap.Response]] = []
         if fuse_maps:
             set_futures.append(self._map_set_clients[agent_a].call_async(SetMap.Request(map=fused_map)))
             set_futures.append(self._map_set_clients[agent_b].call_async(SetMap.Request(map=fused_map)))
@@ -686,7 +697,8 @@ class CommsManager(LifecycleNode):
 
     def _get_pair_key(self, agent_a: str, agent_b: str) -> tuple[str, str]:
         """Return sorted tuple for consistent dictionary keys."""
-        return tuple(sorted([agent_a, agent_b]))  # type: ignore[return-value]
+        a, b = sorted([agent_a, agent_b])
+        return a, b
 
     def _get_distance(self, agent_a: str, agent_b: str) -> float:
         """Get distance between two agents."""

@@ -77,11 +77,8 @@ class LifecycleMonitor(Node):
                 continue
             future = client.call_async(GetState.Request())
             rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
-            if (
-                future.done()
-                and future.result() is not None
-                and future.result().current_state.id == State.PRIMARY_STATE_ACTIVE  # type: ignore[union-attr]
-            ):
+            result = future.result() if future.done() else None
+            if result is not None and result.current_state.id == State.PRIMARY_STATE_ACTIVE:
                 self._mark_active(name)
             self.destroy_client(client)
 

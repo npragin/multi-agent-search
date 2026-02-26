@@ -11,6 +11,7 @@ import math
 import pickle
 import time
 from abc import ABC, abstractmethod
+from typing import overload
 
 import numpy as np
 import numpy.typing as npt
@@ -27,8 +28,12 @@ from rclpy.action.client import ClientGoalHandle
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.client import Client
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+from rclpy.publisher import Publisher
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.service import Service
+from rclpy.subscription import Subscription
 from rclpy.task import Future
+from rclpy.timer import Timer
 from sensor_msgs.msg import LaserScan
 from std_srvs.srv import Empty, Trigger
 
@@ -151,52 +156,67 @@ class AgentBase(LifecycleNode, ABC):
         self._amcl_initialization_service_call_max_attempts: int = 3
         self._initial_pose_msg: PoseWithCovarianceStamped | None = None
         self._nav_status: NavStatus = NavStatus.IDLE
-        self._current_nav_goal: ClientGoalHandle | None = None
+        self._current_nav_goal: (
+            ClientGoalHandle[NavigateToPose.Goal, NavigateToPose.Result, NavigateToPose.Feedback] | None
+        ) = None
         self._pending_goal: PoseStamped | None = None
         self._current_pose: Pose | None = None
 
         # Lifecycle-managed interface lists for clean teardown
         self._managed_timers: list[Timer] = []
-        self._managed_subscriptions: list[Subscription] = []
-        self._managed_publishers: list[Publisher] = []
-        self._managed_service_servers: list[Service] = []
-        self._managed_service_clients: list[Client] = []
-        self._managed_action_clients: list[ActionClient] = []
+        self._managed_subscriptions: list[
+            Subscription[AgentMessage | LaserScan | OccupancyGrid | PoseWithCovarianceStamped]
+        ] = []
+        self._managed_publishers: list[Publisher[AgentMessage]] = []
+        self._managed_service_servers: list[
+            Service[GetMap.Request, GetMap.Response]
+            | Service[SetMap.Request, SetMap.Response]
+            | Service[GetMap.Request, GetMap.Response]
+            | Service[SetMap.Request, SetMap.Response]
+            | Service[Trigger.Request, Trigger.Response]
+            | Service[TargetDetected.Request, TargetDetected.Response]
+        ] = []
+        self._managed_service_clients: list[
+            Client[Empty.Request, Empty.Response] | Client[SetInitialPose.Request, SetInitialPose.Response]
+        ] = []
+        self._managed_action_clients: list[
+            ActionClient[NavigateToPose.Goal, NavigateToPose.Result, NavigateToPose.Feedback]
+        ] = []
 
     def _set_up_state(self) -> None:
         """Set up state for the agent."""
         # Identity
-        self._agent_id: str = self.get_parameter("agent_id").value
-        self._use_known_map: bool = self.get_parameter("use_known_map").value
-        self._known_initial_poses: bool = self.get_parameter("known_initial_poses").value
+        self._agent_id = self.get_parameter("agent_id").value
+        self._use_known_map = self.get_parameter("use_known_map").value
+        self._known_initial_poses = self.get_parameter("known_initial_poses").value
 
         if self._known_initial_poses and not self._use_known_map:
             raise ValueError("known_initial_poses requires use_known_map to be true (AMCL must be running)")
 
         # Map and belief state
-        self._map: npt.NDArray[np.int8] | None = None
-        self._belief: npt.NDArray[np.float32] | None = None
-        self._eliminated: npt.NDArray[np.bool_] | None = None
-        self._map_info: MapMetaData | None = None
+        self._map = None
+        self._belief = None
+        self._eliminated = None
+        self._map_info = None
 
         # Service call retry parameters
-        self._amcl_initialization_service_call_timeout: float = self.get_parameter(
+        self._amcl_initialization_service_call_timeout = self.get_parameter(
             "amcl_initialization_service_call_timeout"
         ).value
-        self._amcl_initialization_service_call_max_attempts: int = self.get_parameter(
+        self._amcl_initialization_service_call_max_attempts = self.get_parameter(
             "amcl_initialization_service_call_max_attempts"
         ).value
 
         # Localization state
-        self._initial_pose_msg: PoseWithCovarianceStamped | None = None
+        self._initial_pose_msg = None
 
         # Navigation state
-        self._nav_status: NavStatus = NavStatus.IDLE
-        self._current_nav_goal: ClientGoalHandle | None = None
-        self._pending_goal: PoseStamped | None = None
+        self._nav_status = NavStatus.IDLE
+        self._current_nav_goal = None
+        self._pending_goal = None
 
         # Pose state
-        self._current_pose: Pose | None = None
+        self._current_pose = None
 
     def _set_up_subscribers(self) -> None:
         """Set up subscribers for the agent."""
@@ -272,7 +292,7 @@ class AgentBase(LifecycleNode, ABC):
         """
         Create service clients.
 
-        Localization clients use a ReentrantCallbackGroup so on_activate can poll-wait for responses without deadlocking.
+        Localization clients use a ReentrantCallbackGroup so on_activate can poll-wait without deadlocking.
         """
         self._localization_cbg = ReentrantCallbackGroup()
         if self._use_known_map and not self._known_initial_poses:
@@ -562,67 +582,56 @@ class AgentBase(LifecycleNode, ABC):
     def _wait_and_set_initial_pose(self) -> TransitionCallbackReturn:
         """Wait for initial pose message, then call set_initial_pose service synchronously."""
         elapsed = 0.0
-        while self._initial_pose_msg is None and elapsed < self._amcl_initialization_service_call_timeout:
+        attempts = self._amcl_initialization_service_call_max_attempts
+        timeout = self._amcl_initialization_service_call_timeout
+        while self._initial_pose_msg is None and elapsed < timeout:
             self.get_logger().info("Waiting for initial pose message...", once=True)
             time.sleep(0.01)
             elapsed += 0.01
         if self._initial_pose_msg is None:
-            self.get_logger().error(
-                f"Initial pose not received after {self._amcl_initialization_service_call_timeout}s"
-            )
+            self.get_logger().error(f"Initial pose not received after {timeout}s")
             return TransitionCallbackReturn.FAILURE
 
-        if not self._set_initial_pose_client.wait_for_service(
-            timeout_sec=self._amcl_initialization_service_call_timeout
-        ):
-            self.get_logger().error(
-                f"set_initial_pose service not available after {self._amcl_initialization_service_call_timeout}s"
-            )
+        if not self._set_initial_pose_client.wait_for_service(timeout_sec=timeout):
+            self.get_logger().error(f"set_initial_pose service not available after {timeout}s")
             return TransitionCallbackReturn.FAILURE
 
         self.get_logger().info("Calling set_initial_pose service")
         request = SetInitialPose.Request(pose=self._initial_pose_msg)
-        for attempt in range(1, self._amcl_initialization_service_call_max_attempts + 1):
+        for attempt in range(1, attempts + 1):
             future = self._set_initial_pose_client.call_async(request)
             elapsed = 0.0
-            while not future.done() and elapsed < self._amcl_initialization_service_call_timeout:
+            while not future.done() and elapsed < timeout:
                 time.sleep(0.01)
                 elapsed += 0.01
             if future.done() and future.result() is not None:
                 self.get_logger().info("Initial pose set successfully")
                 return TransitionCallbackReturn.SUCCESS
-            self.get_logger().warn(
-                f"set_initial_pose attempt {attempt}/{self._amcl_initialization_service_call_max_attempts} failed, retrying..."
-            )
-        self.get_logger().error(
-            f"set_initial_pose failed after {self._amcl_initialization_service_call_max_attempts} attempts"
-        )
+            self.get_logger().warn(f"set_initial_pose attempt {attempt}/{attempts} failed, retrying...")
+        self.get_logger().error(f"set_initial_pose failed after {attempts} attempts")
         return TransitionCallbackReturn.FAILURE
 
     def _wait_and_reinitialize_global_localization(self) -> TransitionCallbackReturn:
         """Call reinitialize_global_localization service synchronously."""
-        if not self._reinit_global_loc_client.wait_for_service(timeout_sec=10.0):
-            self.get_logger().error("reinitialize_global_localization service not available after 10s")
+        timeout = self._amcl_initialization_service_call_timeout
+        attempts = self._amcl_initialization_service_call_max_attempts
+        if not self._reinit_global_loc_client.wait_for_service(timeout_sec=timeout):
+            self.get_logger().error(f"reinitialize_global_localization service not available after {timeout}s")
             return TransitionCallbackReturn.FAILURE
 
         self.get_logger().info("Calling reinitialize_global_localization service")
         request = Empty.Request()
-        for attempt in range(1, self._amcl_initialization_service_call_max_attempts + 1):
+        for attempt in range(1, attempts + 1):
             future = self._reinit_global_loc_client.call_async(request)
             elapsed = 0.0
-            while not future.done() and elapsed < self._amcl_initialization_service_call_timeout:
+            while not future.done() and elapsed < timeout:
                 time.sleep(0.01)
                 elapsed += 0.01
             if future.done():
                 self.get_logger().info("Global localization reinitialized")
                 return TransitionCallbackReturn.SUCCESS
-            self.get_logger().warn(
-                f"reinitialize_global_localization attempt {attempt}/{self._amcl_initialization_service_call_max_attempts} "
-                "failed, retrying..."
-            )
-        self.get_logger().error(
-            f"reinitialize_global_localization failed after {self._amcl_initialization_service_call_max_attempts} attempts"
-        )
+            self.get_logger().warn(f"reinitialize_global_localization attempt {attempt}/{attempts} failed, retrying...")
+        self.get_logger().error(f"reinitialize_global_localization failed after {attempts} attempts")
         return TransitionCallbackReturn.SUCCESS
 
     # -------------------------------------------------------------------------
@@ -656,12 +665,28 @@ class AgentBase(LifecycleNode, ABC):
         self._belief = self._expand_grid(self._belief, old_info, new_info)
         self._eliminated = self._expand_grid(self._eliminated, old_info, new_info)
 
+    @overload
     def _expand_grid(
         self,
-        grid: npt.NDArray,
+        grid: npt.NDArray[np.float32],
         old_info: MapMetaData,
         new_info: MapMetaData,
-    ) -> npt.NDArray:
+    ) -> npt.NDArray[np.float32]: ...
+
+    @overload
+    def _expand_grid(
+        self,
+        grid: npt.NDArray[np.bool_],
+        old_info: MapMetaData,
+        new_info: MapMetaData,
+    ) -> npt.NDArray[np.bool_]: ...
+
+    def _expand_grid(
+        self,
+        grid: npt.NDArray[np.bool_] | npt.NDArray[np.float32],
+        old_info: MapMetaData,
+        new_info: MapMetaData,
+    ) -> npt.NDArray[np.bool_] | npt.NDArray[np.float32]:
         """
         Expand a grid array to cover the union of old and new map extents.
 
@@ -850,7 +875,7 @@ class AgentBase(LifecycleNode, ABC):
         all_rr: list[npt.NDArray[np.intp]] = []
         all_cc: list[npt.NDArray[np.intp]] = []
         for i in range(len(valid_ranges)):
-            rr, cc = skimage_line(robot_row, robot_col, end_rows[i], end_cols[i])
+            rr, cc = skimage_line(robot_row, robot_col, end_rows[i], end_cols[i])  # type: ignore[no-untyped-call]
             all_rr.append(rr)
             all_cc.append(cc)
 

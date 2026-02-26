@@ -56,7 +56,7 @@ class TargetDetector(LifecycleNode):
         self._map_info: MapMetaData | None = None
         self._map_frame_id: str = "map"
 
-        self._managed_subscriptions: list[Subscription] = []
+        self._managed_subscriptions: list[Subscription[LaserScan | Odometry | OccupancyGrid]] = []
         self._managed_service_clients: list[Client[TargetDetected.Request, TargetDetected.Response]] = []
         self._target_detected_clients: dict[str, Client[TargetDetected.Request, TargetDetected.Response]] = {}
 
@@ -230,7 +230,7 @@ class TargetDetector(LifecycleNode):
         all_rr: list[npt.NDArray[np.intp]] = []
         all_cc: list[npt.NDArray[np.intp]] = []
         for i in range(len(valid_ranges)):
-            rr, cc = skimage_line(robot_row, robot_col, end_rows[i], end_cols[i])
+            rr, cc = skimage_line(robot_row, robot_col, end_rows[i], end_cols[i])  # type: ignore[no-untyped-call]
             all_rr.append(rr)
             all_cc.append(cc)
 

@@ -256,10 +256,14 @@ class CommsManager(LifecycleNode):
     def _set_up_timers(self) -> None:
         """Set up timers for the comms manager."""
         close_period = 1.0 / self.comms_config.close_range_rate
-        self._managed_timers.append(self.create_timer(close_period, self._propagate_close_range))
+        self._managed_timers.append(
+            self.create_timer(close_period, lambda: self._propagate_messages(CommsZone.CLOSE_RANGE))
+        )
 
         long_period = 1.0 / self.comms_config.long_range_rate
-        self._managed_timers.append(self.create_timer(long_period, self._propagate_long_range))
+        self._managed_timers.append(
+            self.create_timer(long_period, lambda: self._propagate_messages(CommsZone.LONG_RANGE))
+        )
 
         check_fusion_period = 1.0 / self.get_parameter("check_fusion_eligibility_rate").value
         self._managed_timers.append(
@@ -316,50 +320,16 @@ class CommsManager(LifecycleNode):
                 self.message_buffer.setdefault(sender_id, {}).clear()
             self.message_buffer[sender_id][""] = msg
 
-    def _propagate_close_range(self) -> None:
+    def _propagate_messages(self, zone: CommsZone) -> None:
         """
-        Timer callback (close-range rate).
+        Timer callback to propagate buffered messages for a given communication zone.
 
-        For each sender, determine what to send to each recipient in CLOSE_RANGE zone:
-        - All message types are delivered (heartbeat, coordination)
-        - If targeted message exists for recipient: send targeted
-        - Else if broadcast exists: send broadcast
-        """
-        for sender_id, messages in self.message_buffer.items():
-            broadcast_recipients: set[str] = self.agent_ids - {sender_id}
-            broadcast_msg: AgentMessage | None = None
-            for recipient_id, msg in messages.items():
-                if recipient_id == "":
-                    broadcast_msg = msg
-                    continue
-                else:
-                    broadcast_recipients.remove(recipient_id)
+        For CLOSE_RANGE: all message types are delivered.
+        For LONG_RANGE: only HEARTBEAT messages are delivered (filtered by _should_deliver).
 
-                if self._get_pairwise_zone(sender_id, recipient_id) != CommsZone.CLOSE_RANGE:
-                    continue
-
-                self._publish_to_agent(recipient_id, msg)
-
-            if broadcast_msg is not None:
-                for recipient_id in broadcast_recipients:
-                    if self._get_pairwise_zone(sender_id, recipient_id) != CommsZone.CLOSE_RANGE:
-                        continue
-                    self._publish_to_agent(recipient_id, broadcast_msg)
-
-    def _propagate_long_range(self) -> None:
-        """
-        Timer callback (long-range rate).
-
-        For each sender, determine what to send to each recipient in LONG_RANGE zone.
-
-        Filtering logic:
-        - Skip recipients in CLOSE_RANGE (close-range handler covers them)
-        - Skip recipients in BLACKOUT
-        - For LONG_RANGE recipients: only deliver if msg_type is HEARTBEAT
-        - Coordination messages are NOT delivered to long-range recipients
-
-        Note: If the sender's current message is a coordination message, long-range
-        recipients receive nothing (the previous heartbeat is not preserved).
+        For each sender, targeted messages take priority over broadcasts:
+        - If a targeted message exists for a recipient: send targeted
+        - Else if a broadcast exists: send broadcast
         """
         for sender_id, messages in self.message_buffer.items():
             broadcast_recipients: set[str] = self.agent_ids - {sender_id}
@@ -371,7 +341,7 @@ class CommsManager(LifecycleNode):
                 else:
                     broadcast_recipients.remove(recipient_id)
 
-                if self._get_pairwise_zone(sender_id, recipient_id) != CommsZone.LONG_RANGE:
+                if self._get_pairwise_zone(sender_id, recipient_id) != zone:
                     continue
 
                 if self._should_deliver(sender_id, recipient_id, msg):
@@ -379,7 +349,7 @@ class CommsManager(LifecycleNode):
 
             if broadcast_msg is not None:
                 for recipient_id in broadcast_recipients:
-                    if self._get_pairwise_zone(sender_id, recipient_id) != CommsZone.LONG_RANGE:
+                    if self._get_pairwise_zone(sender_id, recipient_id) != zone:
                         continue
 
                     if self._should_deliver(sender_id, recipient_id, broadcast_msg):

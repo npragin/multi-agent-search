@@ -421,7 +421,9 @@ class AgentBase(LifecycleNode, ABC):
         )
         send_goal_future.add_done_callback(self._on_nav_goal_response)
 
-    def _on_nav_goal_response(self, future: Future[ClientGoalHandle]) -> None:
+    def _on_nav_goal_response(
+        self, future: Future[ClientGoalHandle[NavigateToPose.Goal, NavigateToPose.Result, NavigateToPose.Feedback]]
+    ) -> None:
         """Handle Nav2 goal acceptance or rejection."""
         goal_handle = future.result()
         if goal_handle is None:
@@ -439,20 +441,20 @@ class AgentBase(LifecycleNode, ABC):
             self.get_logger().warn("Navigation goal rejected")
             self._nav_status = NavStatus.FAILED
             self._current_nav_goal = None
-            self.on_navigation_failed("Goal rejected")
+            self.on_navigation_failed("Navigation goal rejected")
 
-    def _on_nav_feedback(self, feedback_msg: NavigateToPose.Impl.FeedbackMessage) -> None:
+    def _on_nav_feedback(self, feedback_msg: NavigateToPose.Feedback) -> None:
         """Forward Nav2 feedback to the virtual hook."""
         self.on_navigation_feedback(feedback_msg.feedback)
 
-    def _on_nav_result(self, future: Future) -> None:
+    def _on_nav_result(self, future: Future[NavigateToPose.Result]) -> None:
         """Handle Nav2 result, dispatching to succeeded/failed hooks."""
         result = future.result()
         self._current_nav_goal = None
         if result is None:
             self.get_logger().warn("Navigation result is None")
             self._nav_status = NavStatus.FAILED
-            self.on_navigation_failed("Result is None")
+            self.on_navigation_failed("Navigation result is None")
             return
         status = result.status
 
@@ -464,7 +466,7 @@ class AgentBase(LifecycleNode, ABC):
             self._nav_status = NavStatus.IDLE
         else:
             self._nav_status = NavStatus.FAILED
-            self.on_navigation_failed(f"Navigation ended with status {status}")
+            self.on_navigation_failed(result.result.error_msg)
 
         # 2. If a new goal was queued, send it (overrides status above)
         if self._pending_goal is not None:
@@ -647,6 +649,13 @@ class AgentBase(LifecycleNode, ABC):
 
         self.on_map_updated()
 
+    def _expand_belief(self, old_info: MapMetaData, new_info: MapMetaData) -> None:
+        """Expand belief and eliminated arrays to cover the union of old and new map extents."""
+        if self._belief is None or self._eliminated is None:
+            raise ValueError("Belief and eliminated arrays must be initialized before expanding")
+        self._belief = self._expand_grid(self._belief, old_info, new_info)
+        self._eliminated = self._expand_grid(self._eliminated, old_info, new_info)
+
     def _expand_grid(
         self,
         grid: npt.NDArray,
@@ -686,13 +695,6 @@ class AgentBase(LifecycleNode, ABC):
 
         return expanded
 
-    def _expand_belief(self, old_info: MapMetaData, new_info: MapMetaData) -> None:
-        """Expand belief and eliminated arrays to cover the union of old and new map extents."""
-        if self._belief is None or self._eliminated is None:
-            raise ValueError("Belief and eliminated arrays must be initialized before expanding")
-        self._belief = self._expand_grid(self._belief, old_info, new_info)
-        self._eliminated = self._expand_grid(self._eliminated, old_info, new_info)
-
     # -------------------------------------------------------------------------
     # Service Handlers
     # -------------------------------------------------------------------------
@@ -709,8 +711,8 @@ class AgentBase(LifecycleNode, ABC):
 
     def _handle_get_belief(self, request: GetMap.Request, response: GetMap.Response) -> object:
         """Service handler: return current belief/coverage grid."""
-        if self._belief is not None:
-            response.map = self._belief_to_occupancy_grid(self._belief)
+        if self._belief is not None and self._eliminated is not None:
+            response.map = self._belief_and_eliminated_to_occupancy_grid(self._belief, self._eliminated)
         return response
 
     def _handle_set_belief(self, request: SetMap.Request, response: SetMap.Response) -> object:
@@ -748,16 +750,19 @@ class AgentBase(LifecycleNode, ABC):
         """Create a fresh MapMetaData from cached fields to avoid C-level assertion failures."""
         src = self._map_info
         info = MapMetaData()
-        info.resolution = src.resolution
-        info.width = src.width
-        info.height = src.height
-        info.origin = src.origin
+        if src is not None:
+            info.resolution = src.resolution
+            info.width = src.width
+            info.height = src.height
+            info.origin = src.origin
         return info
 
-    def _belief_to_occupancy_grid(self, belief: npt.NDArray[np.float32]) -> OccupancyGrid:
+    def _belief_and_eliminated_to_occupancy_grid(
+        self, belief: npt.NDArray[np.float32], eliminated: npt.NDArray[np.bool_]
+    ) -> OccupancyGrid:
         grid = (np.clip(belief, LOG_ODDS_MIN, LOG_ODDS_MAX) * SCALE).astype(np.int8)
-        if self._eliminated is not None:
-            grid[self._eliminated] = ELIMINATED_VALUE
+        if eliminated is not None:
+            grid[eliminated] = ELIMINATED_VALUE
         data = grid.flatten(order="C").tolist()
         msg = OccupancyGrid(data=data)
         msg.info = self._copy_map_info()
@@ -777,10 +782,8 @@ class AgentBase(LifecycleNode, ABC):
         """
         Handle lidar scan internally.
 
-        1. Traces all rays via Bresenham's algorithm (once)
-        2. Updates belief/coverage grid via _update_belief_from_scan
-        3. Checks for target detection via _check_for_targets
-        4. Forwards to subclass via on_lidar_scan for algorithm-specific processing
+        1. Updates belief/coverage grid via _update_belief_from_scan
+        2. Forwards to subclass via on_lidar_scan for algorithm-specific processing
         """
         if self._current_pose is None or self._belief is None or self._map_info is None or self._eliminated is None:
             warning = "_on_lidar_callback is exiting early: "
@@ -795,9 +798,22 @@ class AgentBase(LifecycleNode, ABC):
 
         self.interrupted = True
 
-        all_rr, all_cc = self._trace_scan_rays(scan)
-        self._update_belief_from_scan(all_rr, all_cc)
+        self._update_belief_from_scan(scan)
         self.on_lidar_scan(scan)
+
+    def _update_belief_from_scan(self, scan: LaserScan) -> None:
+        """
+        Eliminate all cells visible in the scan from the target belief grid.
+
+        Sets belief to -inf and marks cells as eliminated for every cell
+        touched by the pre-traced rays.
+        """
+        if self._eliminated is None or self._belief is None:
+            raise ValueError("Eliminated and belief arrays must be initialized before updating")
+
+        all_rr, all_cc = self._trace_scan_rays(scan)
+        self._eliminated[all_rr, all_cc] = True
+        self._belief[all_rr, all_cc] = -np.inf
 
     def _trace_scan_rays(self, scan: LaserScan) -> tuple[npt.NDArray[np.intp], npt.NDArray[np.intp]]:
         """
@@ -847,18 +863,6 @@ class AgentBase(LifecycleNode, ABC):
         mask = (rr >= 0) & (rr < rows) & (cc >= 0) & (cc < cols)
         return rr[mask], cc[mask]
 
-    def _update_belief_from_scan(self, all_rr: npt.NDArray[np.intp], all_cc: npt.NDArray[np.intp]) -> None:
-        """
-        Eliminate all cells visible in the scan from the target belief grid.
-
-        Sets belief to -inf and marks cells as eliminated for every cell
-        touched by the pre-traced rays.
-        """
-        if self._eliminated is None or self._belief is None:
-            raise ValueError("Eliminated and belief arrays must be initialized before updating")
-        self._eliminated[all_rr, all_cc] = True
-        self._belief[all_rr, all_cc] = -np.inf
-
     # -------------------------------------------------------------------------
     # Abstract Callbacks (Must Implement)
     # -------------------------------------------------------------------------
@@ -898,8 +902,7 @@ class AgentBase(LifecycleNode, ABC):
     @abstractmethod
     def on_target_detected(self, target_locations: list[tuple[float, float]]) -> None:
         """
-        Override to handle target detections. Called when the TargetDetector node
-        notifies this agent that it has discovered new targets.
+        Override to handle target detections. Called when the TargetDetector notifies this agent discovered a target(s).
 
         Args:
             target_locations: List of (x, y) world positions for each newly detected target.

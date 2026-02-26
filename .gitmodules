@@ -1,0 +1,3 @@
+[submodule "floorplan-generator-stage"]
+	path = floorplan-generator-stage
+	url = git@github.com:npragin/floorplan-generator-stage.git

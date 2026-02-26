@@ -449,7 +449,6 @@ class CommsManager(LifecycleNode):
         for agent_a, agent_b in combinations(self.agent_ids, 2):
             if self._should_fuse(agent_a, agent_b):
                 self._perform_fusion(agent_a, agent_b)
-                self.get_logger().info(f"Fused {agent_a} and {agent_b}")
 
     def _should_fuse(self, agent_a: str, agent_b: str) -> bool:
         """
@@ -585,6 +584,7 @@ class CommsManager(LifecycleNode):
                 self.get_logger().error(f"Timed out waiting for set requests to fuse {agent_a} and {agent_b}")
                 return
 
+        self.get_logger().info(f"Fused {agent_a} and {agent_b}")
         self._fusion_complete_clients[agent_a].call_async(Trigger.Request())
         self._fusion_complete_clients[agent_b].call_async(Trigger.Request())
         self.last_fusion_time[self._get_pair_key(agent_a, agent_b)] = self.get_clock().now()

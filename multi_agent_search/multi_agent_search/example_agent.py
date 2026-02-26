@@ -1,4 +1,4 @@
-"""Brain Dead Agent for testing the multi-agent search system."""
+"""Example Agent for testing the multi-agent search system."""
 
 import rclpy
 from nav2_msgs.action import NavigateToPose
@@ -63,7 +63,7 @@ class ExampleAgent(AgentBase):
 
     def on_navigation_feedback(self, feedback: NavigateToPose.Feedback) -> None:
         """Handle a navigation feedback."""
-        self.get_logger().info(f"Navigation feedback: {feedback}")
+        pass
 
     def on_navigation_succeeded(self) -> None:
         """Handle a navigation success."""

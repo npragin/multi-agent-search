@@ -355,9 +355,11 @@ class AgentBase(LifecycleNode, ABC):
         """
         Publish a heartbeat carrying this agent's current pose.
 
-        Uses the most recent pose cached from the /{agent_id}/amcl_pose
-        subscription.  Logs a warning and returns without publishing if no
-        pose has been received yet.
+        Args:
+            recipient: Target agent ID, or "" to broadcast to all agents.
+            overwrite_targeted: If broadcasting, whether to clear any pending
+                recipient-specific messages in the comms manager buffer.
+
         """
         heartbeat_message = HeartbeatMessage(
             sender_id=self.agent_id, timestamp=self.get_clock().now().nanoseconds / 1e9, pose=self.current_pose
@@ -371,17 +373,17 @@ class AgentBase(LifecycleNode, ABC):
         overwrite_targeted: bool = True,
     ) -> None:
         """
-        Pickle and publish an algorithm-specific coordination message.
+        Serialize and publish an algorithm-specific coordination message.
 
-        Serializes msg with pickle.dumps() and publishes it as a COORDINATION
-        message via publish_message().
+        Coordination messages are only delivered to close-range agents.
+        While a coordination message is buffered, long-range agents receive
+        nothing (no heartbeat fallback) until the next heartbeat is published.
 
         Args:
-            msg: Coordination message instance to send.
-            recipient: Specific recipient agent ID, or "" for broadcast.
-            overwrite_targeted: For broadcasts, whether to clear any pending
-                               recipient-specific message in the comms manager
-                               buffer for this agent.
+            msg: BaseCoordinationMessage subclass instance to send.
+            recipient: Target agent ID, or "" to broadcast to all agents.
+            overwrite_targeted: If broadcasting, whether to clear any pending
+                recipient-specific messages in the comms manager buffer.
 
         """
         self._publish_message(AgentMessage.COORDINATION, pickle.dumps(msg), recipient, overwrite_targeted)
@@ -409,10 +411,13 @@ class AgentBase(LifecycleNode, ABC):
         """
         Send a NavigateToPose goal to Nav2.
 
-        Cancels any active goal before sending the new one.
-        Sets _nav_status to NAVIGATING.
+        If a goal is already active, it is cancelled first and the new goal
+        is queued. Rapid successive calls honor only the last goal sent.
+        Sets nav_status to NAVIGATING once the goal is accepted.
 
-        Rapid calls honor the last goal sent.
+        Args:
+            goal: Target pose in the robot's map frame.
+
         """
         self._pending_goal = goal
 
@@ -423,9 +428,9 @@ class AgentBase(LifecycleNode, ABC):
 
     def cancel_navigation(self) -> None:
         """
-        Cancel the active navigation goal if one exists.
+        Cancel the active navigation goal and clear any pending goal.
 
-        Sets _nav_status to IDLE.
+        Sets nav_status to IDLE.
         """
         self._pending_goal = None
         if self._current_nav_goal is not None:
@@ -894,48 +899,51 @@ class AgentBase(LifecycleNode, ABC):
 
     @abstractmethod
     def on_heartbeat(self, msg: HeartbeatMessage) -> None:
-        """Override to handle a heartbeat received from another agent."""
+        """
+        Handle a heartbeat received from another agent.
+
+        Heartbeats are received from both close-range and long-range agents.
+
+        Args:
+            msg: Contains sender_id, timestamp, and the sender's current pose.
+
+        """
 
     @abstractmethod
     def on_coordination(self, msg: BaseCoordinationMessage) -> None:
         """
-        Override to handle a coordination message received from another agent.
+        Handle a coordination message received from a close-range agent.
 
-        The base class deserializes the payload automatically; msg is the
-        unpickled BaseCoordinationMessage subclass instance sent by the peer.
-        Use isinstance() to determine the concrete type and read its fields.
+        The payload is automatically deserialized. Use isinstance() to
+        determine the concrete BaseCoordinationMessage subclass.
 
-        This is where algorithm-specific messages are handled, including:
-        - Task assignments
-        - Rendezvous commands
-        - ACK / NACK
-        - Exploration intentions
-        - Any other coordination messages
+        Only received from close-range agents (never long-range).
 
-        Note: Coordination messages are only received from close-range agents.
+        Args:
+            msg: Deserialized BaseCoordinationMessage subclass instance.
+
         """
 
     @abstractmethod
     def on_lidar_scan(self, scan: LaserScan) -> None:
         """
-        Override to handle a lidar scan received. Called after base class has updated belief.
+        Handle a new lidar scan. Called after the base class updates belief.
 
-        Subclass can use this for algorithm-specific processing (e.g., frontier
-        identification) but does NOT need to handle belief updates.
+        Use this for algorithm-specific processing (e.g., frontier detection, replanning).
+
+        Args:
+            scan: Raw LaserScan message from /{agent_id}/base_scan.
+
         """
 
     @abstractmethod
     def on_target_detected(self, target_locations: list[tuple[float, float]]) -> None:
         """
-        Override to handle target detections. Called when the TargetDetector notifies this agent discovered a target(s).
+        Handle new target detections from the TargetDetector.
 
         Args:
-            target_locations: List of (x, y) world positions for each newly detected target.
-
-        Subclass should implement this to handle target discovery, typically by:
-        - Publishing a COORDINATION message to notify other agents
-        - Updating internal search state
-        - Potentially triggering a rendezvous or task reassignment
+            target_locations: List of (x, y) map-frame positions for each
+                newly detected target.
 
         """
 
@@ -945,33 +953,38 @@ class AgentBase(LifecycleNode, ABC):
 
     def on_map_updated(self) -> None:
         """
-        Override to handle map updates. Called after _map is updated from the map topic subscription.
+        Handle a new map.
 
-        NOT called during fusion - use on_fusion_completed for that.
-        Override to trigger replanning or other responses.
+        Not called after fusion; use on_fusion_completed() for that.
         Default: no-op.
         """
 
     def on_fusion_completed(self) -> None:
         """
-        Override to handle fusion completion. Called after map and belief are updated via fusion with another agent.
+        Handle map and belief updates after fusion with another agent.
 
-        on_map_updated and on_belief_updated are NOT called when fusion occurs;
-        this hook is the sole notification for fusion-driven grid updates.
-        Override to trigger replanning or respond to newly discovered information.
+        This is the sole notification for fusion-driven updates;
+        on_map_updated() is not called during fusion.
         Default: no-op.
         """
 
     def on_navigation_feedback(self, feedback: NavigateToPose.Feedback) -> None:
-        """Override to handle Nav2 navigation feedback. Default: no-op."""
+        """
+        Handle a Nav2 feedback update during navigation.
+
+        Args:
+            feedback: Nav2 feedback containing current pose, distance remaining, etc.
+
+        """
 
     def on_navigation_succeeded(self) -> None:
-        """Override to handle when Nav2 reports goal reached. Default: no-op."""
+        """Handle a Nav2 navigation success."""
 
     def on_navigation_failed(self, reason: str) -> None:
         """
-        Override to handle when Nav2 reports failure or the goal is aborted.
+        Handle a Nav2 navigation failure or goal abort.
 
-        Subclass should typically select a new goal or trigger recovery.
-        Default: no-op.
+        Args:
+            reason: Error message from Nav2 describing the failure.
+
         """

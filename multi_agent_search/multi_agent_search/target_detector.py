@@ -20,10 +20,12 @@ from geometry_msgs.msg import Point, PointStamped, Pose
 from nav_msgs.msg import MapMetaData, OccupancyGrid, Odometry
 from rclpy.client import Client
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+from rclpy.publisher import Publisher
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.subscription import Subscription
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener
+from visualization_msgs.msg import Marker, MarkerArray
 
 from multi_agent_search_interfaces.srv import TargetDetected
 
@@ -58,7 +60,9 @@ class TargetDetector(LifecycleNode):
 
         self._managed_subscriptions: list[Subscription[LaserScan | Odometry | OccupancyGrid]] = []
         self._managed_service_clients: list[Client[TargetDetected.Request, TargetDetected.Response]] = []
+        self._managed_publishers: list[Publisher[MarkerArray]] = []
         self._target_detected_clients: dict[str, Client[TargetDetected.Request, TargetDetected.Response]] = {}
+        self._marker_pub: Publisher[MarkerArray] | None = None
 
         self._tf_buffer: Buffer | None = None
         self._tf_listener: TransformListener | None = None
@@ -92,6 +96,9 @@ class TargetDetector(LifecycleNode):
             reliability=ReliabilityPolicy.RELIABLE,
         )
 
+        self._marker_pub = self.create_publisher(MarkerArray, "/target_markers", latched_qos)
+        self._managed_publishers.append(self._marker_pub)
+
         sub_map = self.create_subscription(OccupancyGrid, "/ground_truth_map", self._on_map, latched_qos)
         self._managed_subscriptions.append(sub_map)
 
@@ -116,6 +123,7 @@ class TargetDetector(LifecycleNode):
             self._target_detected_clients[agent_id] = client
             self._managed_service_clients.append(client)
 
+        self._publish_markers()
         self.get_logger().info("Configured")
         return super().on_configure(state)
 
@@ -147,9 +155,13 @@ class TargetDetector(LifecycleNode):
             self.destroy_subscription(sub)
         for client in self._managed_service_clients:
             self.destroy_client(client)
+        for pub in self._managed_publishers:
+            self.destroy_publisher(pub)
         self._managed_subscriptions.clear()
         self._managed_service_clients.clear()
+        self._managed_publishers.clear()
         self._target_detected_clients.clear()
+        self._marker_pub = None
         self._tf_listener = None
         self._tf_buffer = None
 
@@ -288,9 +300,47 @@ class TargetDetector(LifecycleNode):
             request = TargetDetected.Request(targets=target_points)
             client = self._target_detected_clients[agent_id]
             client.call_async(request)
+            self._publish_markers()
 
             if len(self._found_targets) >= len(self._target_positions):
                 self.get_logger().info("All targets have been found!")
+
+    def _publish_markers(self) -> None:
+        """Publish sphere markers for all targets: red if unfound, green if found."""
+        if self._marker_pub is None or not self._target_positions:
+            return
+
+        marker_array = MarkerArray()
+        diameter = 2.0 * self._target_radius
+        stamp = self.get_clock().now().to_msg()
+
+        for i, (tx, ty) in enumerate(self._target_positions):
+            marker = Marker()
+            marker.header.frame_id = self._map_frame_id
+            marker.header.stamp = stamp
+            marker.ns = "targets"
+            marker.id = i
+            marker.type = Marker.CYLINDER
+            marker.action = Marker.ADD
+            marker.pose.position.x = tx
+            marker.pose.position.y = ty
+            marker.pose.position.z = 0.0
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = diameter
+            marker.scale.y = diameter
+            marker.scale.z = 0.01
+            if i in self._found_targets:
+                marker.color.r = 0.0
+                marker.color.g = 1.0
+                marker.color.b = 0.0
+            else:
+                marker.color.r = 1.0
+                marker.color.g = 0.0
+                marker.color.b = 0.0
+            marker.color.a = 1.0
+            marker_array.markers.append(marker)
+
+        self._marker_pub.publish(marker_array)
 
     def _build_target_points(
         self,

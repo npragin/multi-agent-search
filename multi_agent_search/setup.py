@@ -20,6 +20,7 @@ setup(
                 "config/amcl_params.yaml",
                 "config/slam_toolbox_params.yaml",
                 "config/nav2_params.yaml",
+                "config/config.rviz",
             ],
         ),
         ("share/" + package_name + "/world", glob("world/*.world")),

@@ -161,7 +161,14 @@ def _launch_system(context: LaunchContext) -> list[Node | LifecycleNode]:
         OnProcessExit(target_action=localization_monitor, on_exit=[OpaqueFunction(function=_launch_search_and_nav)])
     )
 
-    return [stage_monitor, simulation_launch, on_stage_ready, on_localization_ready]
+    # --- RViz ---
+
+    rviz_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "rviz.launch.py"])),
+        launch_arguments={"agent_ids": agent_ids_str}.items(),
+    )
+
+    return [stage_monitor, simulation_launch, rviz_launch, on_stage_ready, on_localization_ready]
 
 
 def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode | RegisterEventHandler]:

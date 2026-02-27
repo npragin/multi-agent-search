@@ -46,6 +46,7 @@ ros2 launch multi_agent_search multi_agent_search.launch.py
 | `target_radius` | `0.5` | Detection radius of each target (meters) |
 | `use_known_map` | `true` | `true`: Use AMCL and ground truth map<br>`false`: Use slam_toolbox for SLAM |
 | `known_initial_poses` | `true` | `true`: Publish initial poses to AMCL (requires `use_known_map:=true`)<br>`false`: Use uniform prior for initial poses |
+| `agent_executable` | `example_agent` | Name of the agent executable entry point to launch for each robot |
 
 Example with 5 robots and 3 targets:
 
@@ -115,7 +116,8 @@ class MyAgent(AgentBase):
 ### Wiring Your Agent
 
 1. Add an entry point in `multi_agent_search/setup.cfg`
-2. Change the `executable` in `_create_agent_nodes()` in `multi_agent_search/launch/multi_agent_search.launch.py`
+2. Rebuild the package: `colcon build --symlink-install --packages-select multi_agent_search`
+3. Launch with your agent: `ros2 launch multi_agent_search multi_agent_search.launch.py agent_executable:=my_agent`
 
 See `multi_agent_search/multi_agent_search/example_agent.py` for a minimal reference implementation.
 

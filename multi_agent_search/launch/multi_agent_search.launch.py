@@ -31,7 +31,7 @@ TARGET_RADIUS_PLACEHOLDER = "{{TARGET_RADIUS}}"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# AGENT NODE CREATION — replace "example_agent" with your own agent executable
+# AGENT NODE CREATION
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -39,13 +39,9 @@ def _create_agent_nodes(
     agent_ids: list[str],
     use_known_map: bool,
     known_initial_poses: bool,
+    agent_executable: str,
 ) -> list[LifecycleNode]:
-    """
-    Create a LifecycleNode for each agent.
-
-    To use your own agent, change the `executable` parameter below
-    from "example_agent" to your agent's entry-point name.
-    """
+    """Create a LifecycleNode for each agent."""
     agent_nodes: list[LifecycleNode] = []
     for agent_id in agent_ids:
         remappings: list[tuple[str, str]] = []
@@ -56,7 +52,7 @@ def _create_agent_nodes(
         agent_nodes.append(
             LifecycleNode(
                 package="multi_agent_search",
-                executable="example_agent",
+                executable=agent_executable,
                 name=agent_id,
                 namespace="",
                 remappings=remappings,
@@ -201,7 +197,8 @@ def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode 
         ],
     )
 
-    agent_nodes = _create_agent_nodes(agent_ids, use_known_map, known_initial_poses)
+    agent_executable = context.perform_substitution(LaunchConfiguration("agent_executable"))
+    agent_nodes = _create_agent_nodes(agent_ids, use_known_map, known_initial_poses, agent_executable)
 
     target_detector = LifecycleNode(
         package="multi_agent_search",
@@ -283,6 +280,11 @@ def generate_launch_description() -> LaunchDescription:
                 "target_radius",
                 default_value="0.5",
                 description="Radius of each target point in meters",
+            ),
+            DeclareLaunchArgument(
+                "agent_executable",
+                default_value="example_agent",
+                description="Name of the agent executable entry point to launch for each robot",
             ),
             SetParameter("use_sim_time", True),
             OpaqueFunction(function=_validate_args),

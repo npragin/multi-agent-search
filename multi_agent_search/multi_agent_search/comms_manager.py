@@ -524,7 +524,7 @@ class CommsManager(LifecycleNode):
 
         for client in required_clients:
             if not client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().warn(
+                self.get_logger().warning(
                     f"Service {client.srv_name} not available, skipping fusion for {agent_a} and {agent_b}"
                 )
                 return
@@ -557,7 +557,7 @@ class CommsManager(LifecycleNode):
         belief_b: OccupancyGrid = belief_b_future.result().map  # type: ignore[union-attr]
 
         if belief_a == OccupancyGrid() and belief_b == OccupancyGrid():
-            self.get_logger().warn(f"Beliefs are empty for {agent_a} and {agent_b}, skipping fusion")
+            self.get_logger().warning(f"Beliefs are empty for {agent_a} and {agent_b}, skipping fusion")
             return
 
         fused_belief = self._fuse_beliefs(belief_a, belief_b)

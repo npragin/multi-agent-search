@@ -173,7 +173,7 @@ class TargetDetector(LifecycleNode):
             return
 
         if not self._target_positions:
-            self.get_logger().warn("Target positions are not set, skipping target detection", once=True)
+            self.get_logger().warning("Target positions are not set, skipping target detection", once=True)
             return
 
         if len(self._found_targets) >= len(self._target_positions):
@@ -318,7 +318,7 @@ class TargetDetector(LifecycleNode):
                     transformed = self._tf_buffer.transform(pt_stamped, target_frame)
                     points.append(transformed.point)
                 except Exception as e:
-                    self.get_logger().warn(
+                    self.get_logger().warning(
                         f"Could not transform target to {target_frame}, sending in {self._map_frame_id} frame: {e}"
                     )
                     points.append(Point(x=tx, y=ty, z=0.0))

@@ -452,7 +452,7 @@ class AgentBase(LifecycleNode, ABC):
         """Handle Nav2 goal acceptance or rejection."""
         goal_handle = future.result()
         if goal_handle is None:
-            self.get_logger().warn("Navigation goal handle is None")
+            self.get_logger().warning("Navigation goal handle is None")
             self.nav_status = NavStatus.FAILED
             self._current_nav_goal = None
             self.on_navigation_failed("Goal handle is None")
@@ -463,7 +463,7 @@ class AgentBase(LifecycleNode, ABC):
             result_future = goal_handle.get_result_async()
             result_future.add_done_callback(self._on_nav_result)
         else:
-            self.get_logger().warn("Navigation goal rejected")
+            self.get_logger().warning("Navigation goal rejected")
             self.nav_status = NavStatus.FAILED
             self._current_nav_goal = None
             self.on_navigation_failed("Navigation goal rejected")
@@ -477,7 +477,7 @@ class AgentBase(LifecycleNode, ABC):
         result = future.result()
         self._current_nav_goal = None
         if result is None:
-            self.get_logger().warn("Navigation result is None")
+            self.get_logger().warning("Navigation result is None")
             self.nav_status = NavStatus.FAILED
             self.on_navigation_failed("Navigation result is None")
             return
@@ -612,7 +612,7 @@ class AgentBase(LifecycleNode, ABC):
             if future.done() and future.result() is not None:
                 self.get_logger().info("Initial pose set successfully")
                 return TransitionCallbackReturn.SUCCESS
-            self.get_logger().warn(f"set_initial_pose attempt {attempt}/{attempts} failed, retrying...")
+            self.get_logger().warning(f"set_initial_pose attempt {attempt}/{attempts} failed, retrying...")
         self.get_logger().error(f"set_initial_pose failed after {attempts} attempts")
         return TransitionCallbackReturn.FAILURE
 
@@ -635,7 +635,7 @@ class AgentBase(LifecycleNode, ABC):
             if future.done():
                 self.get_logger().info("Global localization reinitialized")
                 return TransitionCallbackReturn.SUCCESS
-            self.get_logger().warn(f"reinitialize_global_localization attempt {attempt}/{attempts} failed, retrying...")
+            self.get_logger().warning(f"reinitialize_global_localization attempt {attempt}/{attempts} failed, retrying...")
         self.get_logger().error(f"reinitialize_global_localization failed after {attempts} attempts")
         return TransitionCallbackReturn.SUCCESS
 
@@ -840,7 +840,7 @@ class AgentBase(LifecycleNode, ABC):
                 warning += "map data, "
             warning = warning.rstrip(", ")
             warning += " not set."
-            self.get_logger().warn(warning, throttle_duration_sec=1.0)
+            self.get_logger().warning(warning, throttle_duration_sec=1.0)
             return
 
         self.interrupted = True

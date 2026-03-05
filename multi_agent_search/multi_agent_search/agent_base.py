@@ -635,7 +635,9 @@ class AgentBase(LifecycleNode, ABC):
             if future.done():
                 self.get_logger().info("Global localization reinitialized")
                 return TransitionCallbackReturn.SUCCESS
-            self.get_logger().warning(f"reinitialize_global_localization attempt {attempt}/{attempts} failed, retrying...")
+            self.get_logger().warning(
+                f"reinitialize_global_localization attempt {attempt}/{attempts} failed, retrying..."
+            )
         self.get_logger().error(f"reinitialize_global_localization failed after {attempts} attempts")
         return TransitionCallbackReturn.SUCCESS
 

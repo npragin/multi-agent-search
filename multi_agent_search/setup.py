@@ -1,3 +1,5 @@
+"""Setup script for the multi_agent_search package."""
+
 from glob import glob
 
 from setuptools import find_packages, setup

@@ -43,7 +43,7 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25
+      xy_goal_tolerance: 0.255
       yaw_goal_tolerance: 0.25
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
@@ -101,7 +101,7 @@ controller_server:
         cost_power: 1
         cost_weight: 3.81
         near_collision_cost: 253
-        critical_cost: 300.0
+        critical_cost: 254.0
         consider_footprint: false
         collision_cost: 1000000.0
         near_goal_distance: 1.0
@@ -138,7 +138,7 @@ planner_server:
     service_introspection_mode: "disabled"
     GridBased:
       plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.5
+      tolerance: 0.25
       use_astar: false
       allow_unknown: true
 
@@ -189,7 +189,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.70
+        inflation_radius: 0.355
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -239,6 +239,6 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.7
+        inflation_radius: 0.355
       always_send_full_costmap: True
       service_introspection_mode: "disabled"

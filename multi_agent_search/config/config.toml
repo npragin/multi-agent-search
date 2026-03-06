@@ -7,14 +7,14 @@ turn_direction = "random"  # Options: "alternating", "random", "clockwise", "cou
 max_retries = 1
 ## Rooms
 num_rooms = 12
-room_wall_length = 3.7
+room_wall_length = 7.2
 room_spacing = 0  # Outer edge of wall to outer edge of next wall spacing
 ## Doorway
-doorway_width = 0.8
+doorway_width = 1.6
 doorway_length = 0
 ## Hallway
-hallway_width = 1.8
-hallway_end_padding = 1.45  # Recommended value for hallway ends to align with room edges: (room_wall_length - doorway_width) / 2
+hallway_width = 3.6
+hallway_end_padding = 2.8  # Recommended value for hallway ends to align with room edges: (room_wall_length - doorway_width) / 2
 num_open_spaces = 0  # Number of hallway segments to convert to open spaces (atria-like squares)
 
 ## Obstacles

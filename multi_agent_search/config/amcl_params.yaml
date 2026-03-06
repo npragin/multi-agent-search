@@ -25,8 +25,8 @@
     initial_pose_yaw: 0.0
 
     # Update thresholds
-    update_min_d: 0.25
-    update_min_a: 0.2
+    update_min_d: 0.1
+    update_min_a: 0.087
 
     # Laser model
     laser_model_type: "likelihood_field"

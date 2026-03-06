@@ -48,6 +48,7 @@ setup(
             "stage_monitor = multi_agent_search.stage_monitor:main",
             "lifecycle_monitor = multi_agent_search.lifecycle_monitor:main",
             "uncoordinated_agent = multi_agent_search.uncoordinated_agent:main",
+            "convoy_agent = multi_agent_search.convoy_agent:main",
         ],
     },
 )

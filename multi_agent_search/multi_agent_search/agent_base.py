@@ -33,9 +33,11 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.service import Service
 from rclpy.subscription import Subscription
 from rclpy.task import Future
+from rclpy.time import Time
 from rclpy.timer import Timer
 from sensor_msgs.msg import LaserScan
 from std_srvs.srv import Empty, Trigger
+from tf2_ros import Buffer, TransformException, TransformListener
 
 from multi_agent_search.types import (
     BaseCoordinationMessage,
@@ -72,6 +74,7 @@ class AgentBase(LifecycleNode, ABC):
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Configure: read params, create all interfaces (pubs/subs/services/clients)."""
         self._set_up_state()
+        self._set_up_tf()
         self._set_up_publishers()
         self._set_up_action_clients()
         self._set_up_service_clients()
@@ -161,6 +164,10 @@ class AgentBase(LifecycleNode, ABC):
         ) = None
         self._pending_goal: PoseStamped | None = None
         self.current_pose: Pose | None = None
+        self._tf_buffer: Buffer | None = None
+        self._tf_listener: TransformListener | None = None
+        self._map_frame: str = ""
+        self._base_frame: str = ""
 
         # Lifecycle-managed interface lists for clean teardown
         self._managed_timers: list[Timer] = []
@@ -217,6 +224,10 @@ class AgentBase(LifecycleNode, ABC):
 
         # Pose state
         self.current_pose = None
+
+        # tf2 frame names
+        self._map_frame = "map" if self.use_known_map else f"{self.agent_id}/map"
+        self._base_frame = f"{self.agent_id}/base_link"
 
     def _set_up_subscribers(self) -> None:
         """Set up subscribers for the agent."""
@@ -305,6 +316,26 @@ class AgentBase(LifecycleNode, ABC):
                 SetInitialPose, f"/{self.agent_id}/set_initial_pose", callback_group=self._localization_cbg
             )
             self._managed_service_clients.append(self._set_initial_pose_client)
+
+    def _set_up_tf(self) -> None:
+        """Create tf2 buffer and listener for looking up map-frame poses."""
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
+
+    def _lookup_map_pose(self, stamp: Time) -> Pose | None:
+        """Look up the robot's map-frame pose at the given timestamp via tf2."""
+        if self._tf_buffer is None:
+            return None
+        try:
+            t = self._tf_buffer.lookup_transform(self._map_frame, self._base_frame, stamp)
+            pose = Pose()
+            pose.position.x = t.transform.translation.x
+            pose.position.y = t.transform.translation.y
+            pose.position.z = t.transform.translation.z
+            pose.orientation = t.transform.rotation
+            return pose
+        except TransformException:
+            return None
 
     # -------------------------------------------------------------------------
     # Publishing Interface
@@ -512,7 +543,7 @@ class AgentBase(LifecycleNode, ABC):
         belief and eliminated grids to compensate for AMCL pose corrections.
         """
         new_pose = msg.pose.pose
-        if self.current_pose is not None:
+        if self.current_pose is not None and not self.use_known_map:
             self._transform_belief_grids(self.current_pose, new_pose)
         self.current_pose = new_pose
 
@@ -869,12 +900,14 @@ class AgentBase(LifecycleNode, ABC):
         Trace all lidar rays using Bresenham's algorithm.
 
         Return the concatenated (row, col) arrays for every cell touched by
-        every finite-range beam in the scan.
+        every finite-range beam in the scan. Uses tf2 to look up the robot's
+        pose at the scan timestamp for accurate ray projection.
         """
         if self.current_pose is None or self.map_info is None:
             raise ValueError("Current pose and map info must be set before tracing scan rays")
 
-        pose = self.current_pose
+        scan_stamp = Time.from_msg(scan.header.stamp)
+        pose = self._lookup_map_pose(scan_stamp) or self.current_pose
         robot_x = pose.position.x
         robot_y = pose.position.y
         robot_yaw = 2.0 * math.atan2(pose.orientation.z, pose.orientation.w)

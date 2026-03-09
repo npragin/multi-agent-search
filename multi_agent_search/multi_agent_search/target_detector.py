@@ -24,6 +24,7 @@ from rclpy.publisher import Publisher
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.subscription import Subscription
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Int32MultiArray
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -60,9 +61,10 @@ class TargetDetector(LifecycleNode):
 
         self._managed_subscriptions: list[Subscription[LaserScan | Odometry | OccupancyGrid]] = []
         self._managed_service_clients: list[Client[TargetDetected.Request, TargetDetected.Response]] = []
-        self._managed_publishers: list[Publisher[MarkerArray]] = []
+        self._managed_publishers: list[Publisher[MarkerArray] | Publisher[Int32MultiArray]] = []
         self._target_detected_clients: dict[str, Client[TargetDetected.Request, TargetDetected.Response]] = {}
         self._marker_pub: Publisher[MarkerArray] | None = None
+        self._targets_found_pub: Publisher[Int32MultiArray] | None = None
 
         self._tf_buffer: Buffer | None = None
         self._tf_listener: TransformListener | None = None
@@ -98,6 +100,9 @@ class TargetDetector(LifecycleNode):
 
         self._marker_pub = self.create_publisher(MarkerArray, "/target_markers", latched_qos)
         self._managed_publishers.append(self._marker_pub)
+
+        self._targets_found_pub = self.create_publisher(Int32MultiArray, "/targets_found", latched_qos)
+        self._managed_publishers.append(self._targets_found_pub)
 
         sub_map = self.create_subscription(OccupancyGrid, "/ground_truth_map", self._on_map, latched_qos)
         self._managed_subscriptions.append(sub_map)
@@ -162,6 +167,7 @@ class TargetDetector(LifecycleNode):
         self._managed_publishers.clear()
         self._target_detected_clients.clear()
         self._marker_pub = None
+        self._targets_found_pub = None
         self._tf_listener = None
         self._tf_buffer = None
 
@@ -301,9 +307,17 @@ class TargetDetector(LifecycleNode):
             client = self._target_detected_clients[agent_id]
             client.call_async(request)
             self._publish_markers()
+            self._publish_targets_found()
 
             if len(self._found_targets) >= len(self._target_positions):
                 self.get_logger().info("All targets have been found!")
+
+    def _publish_targets_found(self) -> None:
+        """Publish sorted list of all found target indices on the /targets_found topic."""
+        if self._targets_found_pub is None:
+            return
+        msg = Int32MultiArray(data=sorted(self._found_targets))
+        self._targets_found_pub.publish(msg)
 
     def _publish_markers(self) -> None:
         """Publish sphere markers for all targets: red if unfound, green if found."""

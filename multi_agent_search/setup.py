@@ -43,10 +43,11 @@ setup(
     entry_points={
         "console_scripts": [
             "comms_manager = multi_agent_search.comms_manager:main",
-            "example_agent = multi_agent_search.example_agent:main",
             "target_detector = multi_agent_search.target_detector:main",
             "stage_monitor = multi_agent_search.stage_monitor:main",
             "lifecycle_monitor = multi_agent_search.lifecycle_monitor:main",
+            "metrics_monitor = multi_agent_search.metrics_monitor:main",
+            "example_agent = multi_agent_search.example_agent:main",
             "uncoordinated_agent = multi_agent_search.uncoordinated_agent:main",
             "convoy_agent = multi_agent_search.convoy_agent:main",
         ],

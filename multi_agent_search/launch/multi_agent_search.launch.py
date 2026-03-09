@@ -174,9 +174,11 @@ def _launch_system(context: LaunchContext) -> list[Node | LifecycleNode]:
 def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode | RegisterEventHandler]:
     """Phase 3 & 4: Launch search system and navigation (deferred until world_config.yaml exists)."""
     num_robots = int(context.perform_substitution(LaunchConfiguration("num_robots")))
+    num_targets = int(context.perform_substitution(LaunchConfiguration("num_targets")))
     target_radius = float(context.perform_substitution(LaunchConfiguration("target_radius")))
     use_known_map = context.perform_substitution(LaunchConfiguration("use_known_map")).lower() == "true"
     known_initial_poses = context.perform_substitution(LaunchConfiguration("known_initial_poses")).lower() == "true"
+    evaluation_mode = context.perform_substitution(LaunchConfiguration("evaluation_mode")).lower() == "true"
 
     agent_ids = [f"robot_{i}" for i in range(num_robots)]
     agent_ids_str = str(agent_ids)
@@ -221,13 +223,35 @@ def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode 
         ],
     )
 
+    lifecycle_node_names: list[str] = []
+    extra_nodes: list[LifecycleNode] = []
+
+    if evaluation_mode:
+        csv_path = context.perform_substitution(LaunchConfiguration("metrics_csv_path"))
+        metrics_monitor = LifecycleNode(
+            package="multi_agent_search",
+            executable="metrics_monitor",
+            name="metrics_monitor",
+            namespace="",
+            parameters=[
+                {"agent_ids": agent_ids},
+                {"num_targets": num_targets},
+                {"scan_topic": "base_scan"},
+                {"csv_path": csv_path},
+            ],
+        )
+        extra_nodes.append(metrics_monitor)
+        lifecycle_node_names.append("metrics_monitor")
+
+    lifecycle_node_names.extend(["comms_manager", "target_detector", *agent_ids])
+
     lifecycle_manager = Node(
         package="nav2_lifecycle_manager",
         executable="lifecycle_manager",
         name="search_lifecycle_manager",
         parameters=[
             {
-                "node_names": ["comms_manager", "target_detector", *agent_ids],
+                "node_names": lifecycle_node_names,
                 "autostart": True,
                 "bond_timeout": 0.0,
             }
@@ -239,7 +263,7 @@ def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode 
         executable="lifecycle_monitor",
         name="search_monitor",
         parameters=[
-            {"node_names": ["comms_manager", "target_detector", *agent_ids]},
+            {"node_names": lifecycle_node_names},
             {"timeout": 60.0},
         ],
     )
@@ -256,7 +280,15 @@ def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode 
 
     on_search_ready = RegisterEventHandler(OnProcessExit(target_action=search_monitor, on_exit=[navigation_launch]))
 
-    return [comms_manager, target_detector, *agent_nodes, lifecycle_manager, search_monitor, on_search_ready]
+    return [
+        *extra_nodes,
+        comms_manager,
+        target_detector,
+        *agent_nodes,
+        lifecycle_manager,
+        search_monitor,
+        on_search_ready,
+    ]
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -292,6 +324,16 @@ def generate_launch_description() -> LaunchDescription:
                 "agent_executable",
                 default_value="example_agent",
                 description="Name of the agent executable entry point to launch for each robot",
+            ),
+            DeclareLaunchArgument(
+                "evaluation_mode",
+                default_value="false",
+                description="If true, launch metrics_monitor to track search performance metrics",
+            ),
+            DeclareLaunchArgument(
+                "metrics_csv_path",
+                default_value="output/metrics.csv",
+                description="Path to the CSV file for metrics output (used when evaluation_mode is true)",
             ),
             SetParameter("use_sim_time", True),
             OpaqueFunction(function=_validate_args),

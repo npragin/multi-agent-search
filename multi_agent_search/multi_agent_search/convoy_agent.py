@@ -23,6 +23,13 @@ class LeaderNegotiationMessage(BaseCoordinationMessage):
     pass
 
 
+@dataclass
+class HandshakeMessage(BaseCoordinationMessage):
+    """Coordination message used to confirm agents are within coordination range before re-entering negotiation."""
+
+    pass
+
+
 class ConvoyPhase(IntEnum):
     """Phase of the convoy agent."""
 
@@ -40,15 +47,17 @@ class ConvoyAgent(AgentBase):
 
         self.declare_parameter("negotiation_timeout", 5.0)
         self.declare_parameter("heartbeat_timeout", 10.0)
-        self.declare_parameter("planning_cooldown", 5.0)
+        self.declare_parameter("planning_cooldown", 1.0)
         self.declare_parameter("follower_nav_cooldown", 2.0)
         self.declare_parameter("minimum_frontier_distance", 1.0)
+        self.declare_parameter("handshake_timeout", 5.0)
 
         self.negotiation_timeout: float = 0.0
         self.heartbeat_timeout: float = 0.0
         self.planning_cooldown: float = 0.0
         self.follower_nav_cooldown: float = 0.0
         self.minimum_frontier_distance: float = 0.0
+        self.handshake_timeout: float = 0.0
 
         self.phase = ConvoyPhase.LEADER_NEGOTIATION
         self.known_agent_ids: set[str] = set()
@@ -56,10 +65,13 @@ class ConvoyAgent(AgentBase):
         self.last_leader_heartbeat_time = self.get_clock().now()
         self._last_breadcrumb_pos: tuple[float, float] | None = None
         self._negotiation_start_time = self.get_clock().now()
+        self._handshake_pending = False
+        self._handshake_start_time = self.get_clock().now()
 
         self.negotiation_timer: rclpy.timer.Timer | None = None
         self.planning_timer: rclpy.timer.Timer | None = None
         self.follower_timeout_timer: rclpy.timer.Timer | None = None
+        self.handshake_timer: rclpy.timer.Timer | None = None
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Activate: read parameters and start leader negotiation."""
@@ -72,6 +84,7 @@ class ConvoyAgent(AgentBase):
         self.planning_cooldown = self.get_parameter("planning_cooldown").value
         self.follower_nav_cooldown = self.get_parameter("follower_nav_cooldown").value
         self.minimum_frontier_distance = self.get_parameter("minimum_frontier_distance").value
+        self.handshake_timeout = self.get_parameter("handshake_timeout").value
 
         # Start negotiation phase
         self.known_agent_ids = {self.agent_id}
@@ -171,6 +184,30 @@ class ConvoyAgent(AgentBase):
             self.get_logger().warn(f"No heartbeat from leader for {elapsed:.1f}s. Re-entering leader negotiation")
             self._enter_negotiation()
 
+    def _start_handshake(self) -> None:
+        """Send a handshake coordination message and start the handshake timeout."""
+        self._handshake_pending = True
+        self._handshake_start_time = self.get_clock().now()
+        self.publish_coordination_message(HandshakeMessage(sender_id=self.agent_id))
+        self.handshake_timer = self.create_timer(1.0, self._check_handshake_timeout)
+
+    def _check_handshake_timeout(self) -> None:
+        """Cancel the handshake if no response is received within the timeout."""
+        if not self._handshake_pending:
+            return
+
+        elapsed = (self.get_clock().now() - self._handshake_start_time).nanoseconds / 1e9
+        if elapsed >= self.handshake_timeout:
+            self.get_logger().info("Handshake timed out. Agent not in coordination range")
+            self._cancel_handshake()
+
+    def _cancel_handshake(self) -> None:
+        """Clear handshake state and cancel the handshake timer."""
+        self._handshake_pending = False
+        if self.handshake_timer is not None:
+            self.handshake_timer.cancel()
+            self.handshake_timer = None
+
     def _enter_negotiation(self) -> None:
         """Reset state and re-enter the leader negotiation phase."""
         # Cancel role-specific timers
@@ -180,6 +217,7 @@ class ConvoyAgent(AgentBase):
         if self.follower_timeout_timer is not None:
             self.follower_timeout_timer.cancel()
             self.follower_timeout_timer = None
+        self._cancel_handshake()
 
         self.cancel_navigation()
 
@@ -200,8 +238,9 @@ class ConvoyAgent(AgentBase):
     def on_heartbeat(self, msg: HeartbeatMessage) -> None:
         """Handle a heartbeat. Followers store the leader's position as a breadcrumb."""
         if self.phase != ConvoyPhase.LEADER_NEGOTIATION and msg.sender_id != self.leader_id:
-            self.get_logger().warn(f"Received heartbeat from unknown agent {msg.sender_id}. Re-entering negotiation")
-            self._enter_negotiation()
+            if not self._handshake_pending:
+                self.get_logger().info(f"Received heartbeat from unknown agent {msg.sender_id}. Initiating handshake")
+                self._start_handshake()
             return
 
         if self.phase == ConvoyPhase.FOLLOWING and msg.sender_id == self.leader_id:
@@ -212,6 +251,10 @@ class ConvoyAgent(AgentBase):
         """Handle a coordination message."""
         if isinstance(msg, LeaderNegotiationMessage) and self.phase == ConvoyPhase.LEADER_NEGOTIATION:
             self.known_agent_ids.add(msg.sender_id)
+        elif isinstance(msg, HandshakeMessage) and self.phase != ConvoyPhase.LEADER_NEGOTIATION:
+            self.get_logger().info(f"Received handshake from {msg.sender_id}. Re-entering negotiation")
+            self._cancel_handshake()
+            self._enter_negotiation()
 
     def on_lidar_scan(self, scan: LaserScan) -> None:
         """Handle a lidar scan."""

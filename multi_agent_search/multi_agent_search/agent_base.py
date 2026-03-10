@@ -450,9 +450,8 @@ class AgentBase(LifecycleNode, ABC):
             goal: Target pose in the robot's map frame.
 
         """
-        self._pending_goal = goal
-
         if self._current_nav_goal is not None:
+            self._pending_goal = goal
             self._current_nav_goal.cancel_goal_async()
         else:
             self._send_nav_goal(goal)

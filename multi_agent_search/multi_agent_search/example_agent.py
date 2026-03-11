@@ -25,10 +25,10 @@ class ExampleAgent(AgentBase):
     - self.belief
     - self.eliminated
     - self.map
-    - self.use_known_map
-    - self.known_initial_poses
     - self.map_info
     - self.nav_status
+    - self.use_known_map
+    - self.known_initial_poses
     """
 
     def __init__(self) -> None:

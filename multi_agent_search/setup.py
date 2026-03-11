@@ -50,6 +50,7 @@ setup(
             "example_agent = multi_agent_search.example_agent:main",
             "uncoordinated_agent = multi_agent_search.uncoordinated_agent:main",
             "convoy_agent = multi_agent_search.convoy_agent:main",
+            "sequential_auction_agent = multi_agent_search.sequential_auction_agent:main",
         ],
     },
 )

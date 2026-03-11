@@ -448,6 +448,7 @@ class CommsManager(LifecycleNode):
         """
         for agent_a, agent_b in combinations(self.agent_ids, 2):
             if self._should_fuse(agent_a, agent_b):
+                self.last_fusion_time[self._get_pair_key(agent_a, agent_b)] = self.get_clock().now()
                 self._perform_fusion(agent_a, agent_b)
 
     def _should_fuse(self, agent_a: str, agent_b: str) -> bool:

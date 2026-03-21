@@ -1,19 +1,4 @@
-"""
-Coarse-Grid Idleness Patrolling Agent with Heartbeat Avoidance
-==============================================================
 
-Core idea ("the heart"):
-    1. Divide the occupancy grid into coarse tiles (kernel_size × kernel_size pixels)
-    2. Track last-visit time per tile
-    3. Always move to the stalest neighboring tile
-    4. Use heartbeats to avoid tiles occupied by other robots
-
-See architecture_liam.md for the full system walkthrough.
-
-Usage:
-    ros2 launch multi_agent_search multi_agent_search.launch.py \\
-        agent_executable:=cr_agent
-"""
 
 from __future__ import annotations
 
@@ -31,29 +16,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from multi_agent_search.agent_base import AgentBase
 from multi_agent_search.types import HeartbeatMessage, NavStatus
 
-# REMOVED: from enum import IntEnum
-# REMOVED: IntEnum unused — no enum types in this agent
-
-# REMOVED: from heapq import heappop, heappush
-# REMOVED: heapq unused — neighbor selection uses linear scan + random tiebreak
-
-
-# REMOVED: Hardcoded node/box/graph definitions that were commented out in
-# the original __init__ (lines 44-98). Replaced by dynamic coarse graph built
-# from the occupancy grid at runtime. See architecture_liam.md §5 "Coarse graph"
-#
-# Original definitions mapped fixed world-coordinate boxes to letter-named
-# nodes (A-N) with a hand-drawn adjacency graph. The dynamic approach builds
-# the same structure automatically from any procedurally generated map.
-
-
 class CR_Agent(AgentBase):
-    """Coarse-grid idleness patroller with heartbeat-based avoidance.
 
-    Divides the occupancy grid into large tiles, tracks per-tile staleness,
-    and always navigates to the stalest neighboring tile — unless another
-    robot's heartbeat says they're already there.
-    """
 
     def __init__(self) -> None:
         super().__init__("CR_Agent")
@@ -79,16 +43,16 @@ class CR_Agent(AgentBase):
         # 60 cells * 0.05 m/cell resolution = 3.0 m per coarse tile.
         self.kernel_size = 60
         self.threshold = 0.25
-        self._graph_pruned = False  # See architecture_liam.md §5 "Reachability pruning"
+        self._graph_pruned = False  
 
-        # Heartbeat avoidance state — See architecture_liam.md §5 "Heartbeat avoidance"
+       
         self.other_robot_cells: dict[str, tuple[tuple[int, int], float]] = {}
-        self.heartbeat_timeout = 5.0  # seconds — ignore stale positions
+        self.heartbeat_timeout = 5.0 
 
         # Goal-send cooldown — prevents rapid duplicate goal sends.
         # See architecture_liam.md §5 "Exploration loop"
         self._last_goal_send_time = None
-        self._goal_cooldown = 2.0  # seconds — min interval between navigate_to calls
+        self._goal_cooldown = 2.0  
 
         self.gt_map_sub = self.create_subscription(
             OccupancyGrid,
@@ -98,9 +62,7 @@ class CR_Agent(AgentBase):
         )
 
         self.locate_robot_timer = self.create_timer(1.0, self._locate_update_robot_cell)
-        # ORIGINAL: # self.exploration_timer = self.create_timer(1.0, self._perform_exploration)
-        # CHANGED: Timer was disabled during development. Enabling it starts the
-        #          planning loop. See architecture_liam.md §5 "Exploration loop"
+
         self.exploration_timer = self.create_timer(1.0, self._perform_exploration)
 
     # ── Map & Graph ──────────────────────────────────────────────────────
@@ -156,16 +118,7 @@ class CR_Agent(AgentBase):
         return result
 
     def _prune_unreachable_tiles(self) -> None:
-        """BFS from robot_cell — mark unreachable traversable tiles as blocked.
 
-        Maps are procedurally generated with irregular shapes (serpentine
-        hallways, rooms). Some coarse tiles may pass the free-ratio threshold
-        but be isolated behind walls with no path from the robot. This BFS
-        ensures only connected tiles are considered.
-
-        See architecture_liam.md §2 "Map Generation & Shape"
-        See architecture_liam.md §5 "Reachability pruning"
-        """
         if self.robot_cell is None or self.graph is None:
             return
         visited = set()
@@ -204,10 +157,7 @@ class CR_Agent(AgentBase):
             self.get_logger().info('Graph is None')
             return
 
-        # ORIGINAL: # self.publish_heartbeat()
-        # CHANGED: Heartbeats are required for multi-robot avoidance. Other robots'
-        #          on_heartbeat() uses our pose to avoid our tile.
-        #          See architecture_liam.md §4 "Communication Model"
+       
         self.publish_heartbeat()
 
         # One-time reachability prune after graph + robot_cell are both ready
@@ -218,18 +168,13 @@ class CR_Agent(AgentBase):
         if self.nav_status == NavStatus.NAVIGATING:
             return
 
-        # Cooldown: don't send a new goal if we just sent one.
-        # Between _send_nav_goal() and _on_nav_goal_response(), _current_nav_goal
-        # is still None and nav_status hasn't changed — without this guard, the
-        # next timer tick would send a duplicate goal.
+   
         if self._last_goal_send_time is not None:
             elapsed = (self.get_clock().now().nanoseconds - self._last_goal_send_time) / 1e9
             if elapsed < self._goal_cooldown:
                 return
 
-        # Guard: don't send goals before Nav2 action server is available.
-        # Nav2 starts in Phase 4 (after search system monitor completes).
-        # Goals sent before the server exists will fail silently.
+  
         if not self._nav_client.server_is_ready():
             self.get_logger().info('Nav2 action server not ready')
             return
@@ -248,16 +193,7 @@ class CR_Agent(AgentBase):
     # ── Neighbor Selection ───────────────────────────────────────────────
 
     def _get_most_neglected_neighbor_box(self):
-        """Pick the stalest traversable neighbor tile, avoiding other robots.
 
-        1. Gather 4-connected traversable neighbors of robot's current tile
-        2. Build a blocked set from heartbeat data (other robot's tile + 1-hop)
-        3. Prefer unblocked neighbors; fall back to all if everything blocked
-        4. Among candidates, pick the one with the longest idle time
-        5. Break ties randomly
-
-        See architecture_liam.md §5 "Neighbor selection" and "Heartbeat avoidance"
-        """
         if self.robot_cell is None or self.graph is None or self.tile_timers is None:
             return None
         i, j = self.robot_cell
@@ -272,9 +208,7 @@ class CR_Agent(AgentBase):
         if not neighbors:
             return None
 
-        # Build blocked cells from heartbeat data
-        # Each other robot blocks its tile + 1-hop graph neighbors
-        # See architecture_liam.md §5 "Heartbeat avoidance"
+     
         now_sec = self.get_clock().now().nanoseconds / 1e9
         blocked: set[tuple[int, int]] = set()
         for agent_id, (cell, ts) in list(self.other_robot_cells.items()):
@@ -320,15 +254,7 @@ class CR_Agent(AgentBase):
     # ── Coordinate Conversion ────────────────────────────────────────────
 
     def graph_cell_center_to_stage(self, ni, nj):
-        """Convert coarse tile (ni, nj) to world (x, y) at the centroid of free cells.
 
-        ORIGINAL: Used geometric center — (nj+0.5)*kernel_size, (ni+0.5)*kernel_size.
-        CHANGED: Geometric center can land in a wall if the tile is only partially
-                 free (threshold=0.25 means 75% can be walls). Now computes centroid
-                 of free cells (value==0) within the tile block. Falls back to
-                 geometric center if no free cells found.
-                 See architecture_liam.md §5 "Coarse graph"
-        """
         if self.gt_map is None:
             return None, None
         origin_x = self.gt_map.info.origin.position.x
@@ -359,10 +285,7 @@ class CR_Agent(AgentBase):
         return x, y
 
     def get_kernel_indices_from_xy(self, x, y):
-        """Convert world (x, y) to coarse graph cell (i, j).
 
-        Returns (i, j) or (None, None) if out of bounds.
-        """
         if self.gt_map is None or self.graph is None:
             return None, None
         origin_x = self.gt_map.info.origin.position.x
@@ -384,20 +307,14 @@ class CR_Agent(AgentBase):
     # ── Robot Tracking ───────────────────────────────────────────────────
 
     def _locate_update_robot_cell(self):
-        """Convert robot pose to coarse graph cell and stamp tile timer.
 
-        See architecture_liam.md §5 "Robot tracking"
-        """
         if self.current_pose is None:
             return None
         stage_x = self.current_pose.position.x
         stage_y = self.current_pose.position.y
         self.get_logger().info(f'robot_pose: ({stage_x}, {stage_y})')
 
-        # ORIGINAL: if self.tile_timers is None or self.robot_cell is None:
-        # CHANGED: robot_cell starts as None — checking it here prevents first
-        #          initialization. Only tile_timers needs guarding.
-        #          See architecture_liam.md §5 "Robot tracking"
+    
         if self.tile_timers is None:
             return
 
@@ -420,15 +337,13 @@ class CR_Agent(AgentBase):
     def _pose_from_xy(self, x: float, y: float) -> PoseStamped:
         """Create a PoseStamped goal at (x, y) in the map frame."""
         pose = PoseStamped()
-        # ORIGINAL: pose.header.frame_id = "map" if self.use_known_map else self.agent_id + "/map"
-        # CHANGED: AgentBase already computes this as self._map_frame (agent_base.py:229)
+     
         pose.header.frame_id = self._map_frame
         pose.header.stamp = self.get_clock().now().to_msg()
         pose.pose.position.x = x
         pose.pose.position.y = y
         pose.pose.position.z = 0.0
-        # ORIGINAL: pose.pose.orientation.x = 0.0  (and y, z)
-        # REMOVED: PoseStamped defaults are already 0.0 for x/y/z
+
         pose.pose.orientation.w = 1.0
         return pose
 
@@ -440,10 +355,7 @@ class CR_Agent(AgentBase):
         See architecture_liam.md §4 "Communication Model"
         See architecture_liam.md §5 "Heartbeat avoidance"
         """
-        # ORIGINAL: pass
-        # CHANGED: Now projects heartbeat sender's position onto our coarse
-        #          graph so _get_most_neglected_neighbor_box() can avoid
-        #          tiles occupied by other robots.
+
         if msg.sender_id == self.agent_id:
             return
         cell = self.get_kernel_indices_from_xy(msg.pose.position.x, msg.pose.position.y)
@@ -461,8 +373,6 @@ class CR_Agent(AgentBase):
         """Log failure. Cooldown stays active to prevent rapid retry of bad goals."""
         self.get_logger().warning(f'Navigation failed: {error_msg}')
 
-    # on_coordination(), on_lidar_scan(), on_target_detected() are @abstractmethod
-    # in AgentBase (agent_base.py:967-1003) — must be implemented even if no-op.
 
     def on_coordination(self, msg) -> None:
         pass

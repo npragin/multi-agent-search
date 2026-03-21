@@ -89,15 +89,7 @@ class CR_Agent(AgentBase):
         return timers
 
     def create_graph(self, msg, n, threshold):
-        """Build coarse traversability graph from occupancy grid.
 
-        Divides the grid into n×n pixel blocks. A block is traversable (0)
-        if ≥ threshold fraction of its cells are free (value 0 in the
-        occupancy grid). Unknown cells (-1, exterior) and occupied cells
-        (100) both count against the free ratio.
-
-        See architecture_liam.md §5 "Coarse graph"
-        """
         grid = np.array(msg.data).reshape(msg.info.height, msg.info.width)
 
         h, w = grid.shape
@@ -350,11 +342,6 @@ class CR_Agent(AgentBase):
     # ── Communication Hooks ──────────────────────────────────────────────
 
     def on_heartbeat(self, msg: HeartbeatMessage) -> None:
-        """Project sender's pose onto coarse graph, store for avoidance.
-
-        See architecture_liam.md §4 "Communication Model"
-        See architecture_liam.md §5 "Heartbeat avoidance"
-        """
 
         if msg.sender_id == self.agent_id:
             return

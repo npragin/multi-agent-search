@@ -3,7 +3,7 @@
 wall_thickness = 0.2
 num_turns = 15  # num_turns + 1 is the number of hallway segments
 turn_direction = "random"  # Options: "alternating", "random", "clockwise", "counterclockwise" but clockwise and counterclockwise are broken
-# seed = 0  # Uncomment and set for detereminism
+seed = 111338749  # Uncomment and set for detereminism
 max_retries = 1
 ## Rooms
 num_rooms = 36
@@ -32,6 +32,7 @@ num_robots = {{NUM_ROBOTS}}
 robot_min_clearance = 0.5  # Minimum distance from walls and between robot edges (measured from outer edge of robot)
 clustered_robot_spawns = true  # If true, robots are clustered. If false, all robots are placed randomly.
 spawn_export_filename = "world_config.yaml"
+# Robot orientation is controlled by the robot_config.yaml file
 
 # Target Points
 num_extra_points = {{NUM_TARGETS}}

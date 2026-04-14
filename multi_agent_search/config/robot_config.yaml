@@ -11,3 +11,7 @@ header_path: world/robot_header.world
 templates:
   - path: world/pioneer2dx_with_laser_template.world
     count: {{NUM_ROBOTS}}
+
+# Robot orientation settings
+random_orientation: false
+constant_orientation: 0.0  # ignored if random_orientation is true

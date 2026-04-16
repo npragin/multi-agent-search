@@ -224,7 +224,7 @@ def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode 
     )
 
     lifecycle_node_names: list[str] = []
-    extra_nodes: list[LifecycleNode] = []
+    gated_actions: list = []
 
     if evaluation_mode:
         csv_path = context.perform_substitution(LaunchConfiguration("metrics_csv_path"))
@@ -240,7 +240,7 @@ def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode 
                 {"csv_path": csv_path},
             ],
         )
-        extra_nodes.append(metrics_monitor)
+        gated_actions.append(metrics_monitor)
         lifecycle_node_names.append("metrics_monitor")
 
     lifecycle_node_names.extend(["comms_manager", "target_detector", *agent_ids])
@@ -268,6 +268,22 @@ def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode 
         ],
     )
 
+    # --- Map merge (unknown map mode only) ---
+
+    if not use_known_map:
+        gated_actions.append(
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([FindPackageShare("multirobot_map_merge"), "launch", "map_merge.launch.py"])
+                ),
+                launch_arguments={
+                    "use_sim_time": "true",
+                    "namespace": "/",
+                    "known_init_poses": "False",
+                }.items(),
+            )
+        )
+
     # --- Navigation (after search_monitor confirms all search nodes are active) ---
 
     navigation_launch = IncludeLaunchDescription(
@@ -281,7 +297,7 @@ def _launch_search_and_nav(context: LaunchContext) -> list[Node | LifecycleNode 
     on_search_ready = RegisterEventHandler(OnProcessExit(target_action=search_monitor, on_exit=[navigation_launch]))
 
     return [
-        *extra_nodes,
+        *gated_actions,
         comms_manager,
         target_detector,
         *agent_nodes,

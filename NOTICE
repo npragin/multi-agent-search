@@ -2,7 +2,7 @@ This package contains code from multirobot_map_merge, originally part of
 m-explore-ros2 by robo-friends:
 
   https://github.com/robo-friends/m-explore-ros2
-  Path: map_merge/
+  Path: multirobot_map_merge/
 
 Copyright (c) 2014, Zhi Yan.
 Copyright (c) 2015-2016, Jiri Horner.

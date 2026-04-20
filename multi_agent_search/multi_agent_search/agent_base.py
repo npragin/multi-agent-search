@@ -80,6 +80,7 @@ class AgentBase(LifecycleNode, ABC):
         self._set_up_service_clients()
         self._set_up_subscribers()
         self._set_up_service_servers()
+        self._set_up_timers()
         self.get_logger().info("Configured")
         return super().on_configure(state)
 
@@ -146,6 +147,8 @@ class AgentBase(LifecycleNode, ABC):
         self.declare_parameter("amcl_initialization_service_call_timeout", 5.0)
         self.declare_parameter("amcl_initialization_service_call_max_attempts", 3)
 
+        self.declare_parameter("pose_update_rate_hz", 10.0)
+
     def _set_up_state_defaults(self) -> None:
         """Set all instance attributes to safe defaults before on_configure."""
         self.agent_id: str = ""
@@ -157,6 +160,7 @@ class AgentBase(LifecycleNode, ABC):
         self.map_info: MapMetaData | None = None
         self._amcl_initialization_service_call_timeout: float = 5.0
         self._amcl_initialization_service_call_max_attempts: int = 3
+        self._pose_update_rate_hz: float = 10.0
         self._initial_pose_msg: PoseWithCovarianceStamped | None = None
         self.nav_status: NavStatus = NavStatus.IDLE
         self._current_nav_goal: (
@@ -225,9 +229,10 @@ class AgentBase(LifecycleNode, ABC):
         # Pose state
         self.current_pose = None
 
-        # tf2 frame names
+        # tf2
         self._map_frame = "map" if self.use_known_map else f"{self.agent_id}/map"
         self._base_frame = f"{self.agent_id}/base_link"
+        self._pose_update_rate_hz = self.get_parameter("pose_update_rate_hz").value
 
     def _set_up_subscribers(self) -> None:
         """Set up subscribers for the agent."""
@@ -246,13 +251,7 @@ class AgentBase(LifecycleNode, ABC):
         self._sub_map = self.create_subscription(
             OccupancyGrid, f"/{self.agent_id}/map", self._on_map_updated, latched_qos
         )
-        self._sub_pose = self.create_subscription(
-            PoseWithCovarianceStamped,
-            f"/{self.agent_id}/pose",
-            self._on_pose_updated,
-            latched_qos if self.use_known_map else 10,  # AMCL publishes a latched topic
-        )
-        self._managed_subscriptions.extend([self._sub_incoming, self._sub_lidar, self._sub_map, self._sub_pose])
+        self._managed_subscriptions.extend([self._sub_incoming, self._sub_lidar, self._sub_map])
 
         if self.known_initial_poses:
             self._sub_initial_pose = self.create_subscription(
@@ -316,6 +315,11 @@ class AgentBase(LifecycleNode, ABC):
                 SetInitialPose, f"/{self.agent_id}/set_initial_pose", callback_group=self._localization_cbg
             )
             self._managed_service_clients.append(self._set_initial_pose_client)
+
+    def _set_up_timers(self) -> None:
+        """Create the TF-polling timer that refreshes `current_pose`."""
+        self._pose_timer = self.create_timer(1.0 / self._pose_update_rate_hz, self._poll_pose)
+        self._managed_timers.append(self._pose_timer)
 
     def _set_up_tf(self) -> None:
         """Create tf2 buffer and listener for looking up map-frame poses."""
@@ -533,15 +537,19 @@ class AgentBase(LifecycleNode, ABC):
     # Map Subscription Handler
     # -------------------------------------------------------------------------
 
-    def _on_pose_updated(self, msg: PoseWithCovarianceStamped) -> None:
+    def _poll_pose(self) -> None:
         """
-        Cache the latest pose from /{agent_id}/amcl_pose.
+        Refresh `current_pose` from the TF tree.
 
-        Updates _current_pose so publish_heartbeat() always has a fresh value.
-        When a previous pose exists, applies a rigid-body transform to the
-        belief and eliminated grids to compensate for AMCL pose corrections.
+        In known-map mode this reads `map -> {agent_id}/base_link`; in
+        unknown-map mode it reads `{agent_id}/map -> {agent_id}/base_link`.
+        When a previous pose exists in SLAM mode, applies a rigid-body
+        transform to the belief/eliminated grids to compensate for pose
+        corrections.
         """
-        new_pose = msg.pose.pose
+        new_pose = self._lookup_map_pose(Time())
+        if new_pose is None:
+            return
         if self.current_pose is not None and not self.use_known_map:
             self._transform_belief_grids(self.current_pose, new_pose)
         self.current_pose = new_pose

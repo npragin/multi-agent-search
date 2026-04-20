@@ -47,7 +47,6 @@ def _create_agent_nodes(
         remappings: list[tuple[str, str]] = []
         if use_known_map:
             remappings.append((f"/{agent_id}/map", "/ground_truth_map"))
-            remappings.append((f"/{agent_id}/pose", f"/{agent_id}/amcl_pose"))
 
         agent_nodes.append(
             LifecycleNode(
